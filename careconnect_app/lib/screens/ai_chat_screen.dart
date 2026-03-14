@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'dart:io';
 
 class AppColors {
   static const Color primary = Color(0xFF00897B);
@@ -15,12 +19,14 @@ class ChatMessage {
   final bool isUser;
   final DateTime timestamp;
   bool isTyping;
+  final String? imagePath; // for camera images
 
   ChatMessage({
     required this.text,
     required this.isUser,
     DateTime? timestamp,
     this.isTyping = false,
+    this.imagePath,
   }) : timestamp = timestamp ?? DateTime.now();
 }
 
@@ -37,6 +43,13 @@ class _AIChatScreenState extends State<AIChatScreen> with TickerProviderStateMix
   final List<ChatMessage> _messages = [];
   bool _isAITyping = false;
 
+  // Speech to text
+  late stt.SpeechToText _speech;
+  bool _isListening = false;
+
+  // Image picker
+  final ImagePicker _imagePicker = ImagePicker();
+
   final List<String> _suggestedQuestions = [
     'Why is my BP high?',
     'What does my medicine do?',
@@ -46,7 +59,6 @@ class _AIChatScreenState extends State<AIChatScreen> with TickerProviderStateMix
     'Can I skip my evening dose?',
   ];
 
-  // Mock AI responses based on keywords
   final Map<String, String> _aiResponses = {
     'bp': '''High blood pressure can be caused by several factors:
 
@@ -142,7 +154,7 @@ _Would you like me to set a reminder?_''',
   @override
   void initState() {
     super.initState();
-    // Add welcome message
+    _speech = stt.SpeechToText();
     _messages.add(ChatMessage(
       text: '''Hello Rajesh! 👋 I'm your AI health assistant.
 
@@ -178,15 +190,12 @@ _Is there anything specific about your health I can help with?_''';
 
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
-
     setState(() {
       _messages.add(ChatMessage(text: text.trim(), isUser: true));
       _isAITyping = true;
     });
     _controller.clear();
     _scrollToBottom();
-
-    // Simulate AI typing delay
     Future.delayed(const Duration(milliseconds: 800), () {
       if (!mounted) return;
       final response = _getAIResponse(text);
@@ -196,6 +205,121 @@ _Is there anything specific about your health I can help with?_''';
       });
       _scrollToBottom();
     });
+  }
+
+  // ── VOICE INPUT ──────────────────────────────────────────────────
+  Future<void> _toggleListening() async {
+    if (_isListening) {
+      await _speech.stop();
+      setState(() => _isListening = false);
+      return;
+    }
+
+    final available = await _speech.initialize(
+      onStatus: (status) {
+        if (status == 'done' || status == 'notListening') {
+          if (mounted) setState(() => _isListening = false);
+        }
+      },
+      onError: (error) {
+        if (mounted) {
+          setState(() => _isListening = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('🎤 Mic error: ${error.errorMsg}'), backgroundColor: Colors.red),
+          );
+        }
+      },
+    );
+
+    if (available) {
+      setState(() => _isListening = true);
+      _speech.listen(
+        onResult: (result) {
+          if (mounted) {
+            setState(() {
+              _controller.text = result.recognizedWords;
+              _controller.selection = TextSelection.fromPosition(
+                TextPosition(offset: _controller.text.length),
+              );
+            });
+          }
+          if (result.finalResult && result.recognizedWords.isNotEmpty) {
+            _sendMessage(result.recognizedWords);
+            _speech.stop();
+            setState(() => _isListening = false);
+          }
+        },
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 3),
+      );
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('🎤 Microphone permission denied. Please allow mic access in Settings.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // ── CAMERA INPUT ─────────────────────────────────────────────────
+  Future<void> _openCamera() async {
+    try {
+      final XFile? photo = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 80,
+      );
+      if (photo == null || !mounted) return;
+
+      // Add the image as a user message
+      setState(() {
+        _messages.add(ChatMessage(
+          text: '📷 Scanned image',
+          isUser: true,
+          imagePath: photo.path,
+        ));
+        _isAITyping = true;
+      });
+      _scrollToBottom();
+
+      // Simulate AI analyzing the prescription
+      Future.delayed(const Duration(milliseconds: 1200), () {
+        if (!mounted) return;
+        setState(() {
+          _isAITyping = false;
+          _messages.add(ChatMessage(
+            text: '''📷 **Prescription Scan Analysis**
+
+I've analyzed your prescription image. Here's what I found:
+
+💊 **Detected Medication**:
+• **Metformin 500mg** — Take 1 tablet after meals, twice daily
+• **Amlodipine 5mg** — Take 1 tablet at bedtime
+
+⚠️ **Important Notes**:
+• Metformin: avoid skipping doses
+• Amlodipine: do not crush or chew
+
+✅ **Added to your Medication Schedule**
+
+_Please verify with your pharmacist if anything looks incorrect._''',
+            isUser: false,
+          ));
+        });
+        _scrollToBottom();
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📷 Camera permission denied. Please allow camera access in Settings.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   void _scrollToBottom() {
@@ -214,6 +338,7 @@ _Is there anything specific about your health I can help with?_''';
   void dispose() {
     _controller.dispose();
     _scrollController.dispose();
+    _speech.stop();
     super.dispose();
   }
 
@@ -222,24 +347,11 @@ _Is there anything specific about your health I can help with?_''';
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: Row(
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 36, height: 36,
-              decoration: BoxDecoration(
-                color: AppColors.secondary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Icon(Icons.smart_toy, color: AppColors.secondary, size: 20),
-            ),
-            const SizedBox(width: 12),
-            const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('AI Doctor', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
-                Text('Online • Ready to help', style: TextStyle(fontSize: 11, color: Colors.green)),
-              ],
-            ),
+            Text('AI Doctor', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+            Text('Online • Ready to help', style: TextStyle(fontSize: 11, color: Colors.green)),
           ],
         ),
         backgroundColor: Colors.white,
@@ -253,18 +365,15 @@ _Is there anything specific about your health I can help with?_''';
       ),
       body: Column(
         children: [
-          // Chat messages
           Expanded(
             child: ListView.builder(
               controller: _scrollController,
               padding: const EdgeInsets.all(16),
               itemCount: _messages.length + (_isAITyping ? 1 : 0) + (_messages.length <= 1 ? 1 : 0),
               itemBuilder: (context, index) {
-                // Show suggestions after welcome
                 if (_messages.length <= 1 && index == _messages.length) {
                   return _buildSuggestions();
                 }
-                // Show typing indicator
                 if (_isAITyping && index == _messages.length) {
                   return _buildTypingIndicator();
                 }
@@ -273,8 +382,6 @@ _Is there anything specific about your health I can help with?_''';
               },
             ),
           ),
-
-          // Input area
           _buildInputArea(),
         ],
       ),
@@ -289,20 +396,9 @@ _Is there anything specific about your health I can help with?_''';
         mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!isUser) ...[
-            Container(
-              width: 32, height: 32,
-              decoration: BoxDecoration(
-                color: AppColors.secondary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.smart_toy, color: AppColors.secondary, size: 16),
-            ),
-            const SizedBox(width: 8),
-          ],
           Flexible(
             child: Container(
-              padding: const EdgeInsets.all(14),
+              padding: message.imagePath != null ? const EdgeInsets.all(6) : const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: isUser ? AppColors.primary : Colors.white,
                 borderRadius: BorderRadius.only(
@@ -322,14 +418,43 @@ _Is there anything specific about your health I can help with?_''';
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    message.text,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: isUser ? Colors.white : AppColors.textPrimary,
-                      height: 1.5,
+                  // Show image if available
+                  if (message.imagePath != null) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.file(
+                        File(message.imagePath!),
+                        width: 220,
+                        height: 180,
+                        fit: BoxFit.cover,
+                      ),
                     ),
-                  ),
+                    const SizedBox(height: 6),
+                  ],
+                  isUser && message.imagePath == null
+                      ? Text(
+                          message.text,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.white,
+                            height: 1.5,
+                          ),
+                        )
+                      : !isUser
+                          ? MarkdownBody(
+                              data: message.text,
+                              selectable: true,
+                              styleSheet: MarkdownStyleSheet(
+                                p: const TextStyle(
+                                  fontSize: 14,
+                                  color: AppColors.textPrimary,
+                                  height: 1.5,
+                                ),
+                                listBullet: const TextStyle(color: AppColors.primary, fontSize: 14),
+                                strong: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
                   const SizedBox(height: 4),
                   Text(
                     '${message.timestamp.hour}:${message.timestamp.minute.toString().padLeft(2, '0')} ${message.timestamp.hour >= 12 ? 'PM' : 'AM'}',
@@ -342,13 +467,6 @@ _Is there anything specific about your health I can help with?_''';
               ),
             ),
           ),
-          if (isUser) const SizedBox(width: 8),
-          if (isUser)
-            CircleAvatar(
-              radius: 16,
-              backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-              child: const Text('R', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 14)),
-            ),
         ],
       ),
     );
@@ -359,15 +477,6 @@ _Is there anything specific about your health I can help with?_''';
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         children: [
-          Container(
-            width: 32, height: 32,
-            decoration: BoxDecoration(
-              color: AppColors.secondary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.smart_toy, color: AppColors.secondary, size: 16),
-          ),
-          const SizedBox(width: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
@@ -388,21 +497,7 @@ _Is there anything specific about your health I can help with?_''';
     );
   }
 
-  Widget _buildDot(int index) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.3, end: 1.0),
-      duration: Duration(milliseconds: 600 + (index * 200)),
-      builder: (context, value, child) {
-        return Container(
-          width: 8, height: 8,
-          decoration: BoxDecoration(
-            color: AppColors.secondary.withValues(alpha: value),
-            shape: BoxShape.circle,
-          ),
-        );
-      },
-    );
-  }
+  Widget _buildDot(int index) => _TypingDot(index: index);
 
   Widget _buildSuggestions() {
     return Padding(
@@ -410,22 +505,38 @@ _Is there anything specific about your health I can help with?_''';
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('💡 Suggested questions:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8, runSpacing: 8,
-            children: _suggestedQuestions.map((q) => GestureDetector(
-              onTap: () => _sendMessage(q),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.secondary.withValues(alpha: 0.3)),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 4),
+            child: Text('💡 Suggested questions:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
+          ),
+          const SizedBox(height: 12),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
+            child: Row(
+              children: _suggestedQuestions.map((q) => Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: GestureDetector(
+                  onTap: () => _sendMessage(q),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: AppColors.secondary.withValues(alpha: 0.2)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.secondary.withValues(alpha: 0.05),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Text(q, style: const TextStyle(fontSize: 13, color: AppColors.secondary, fontWeight: FontWeight.w500)),
+                  ),
                 ),
-                child: Text(q, style: const TextStyle(fontSize: 12, color: AppColors.secondary)),
-              ),
-            )).toList(),
+              )).toList(),
+            ),
           ),
         ],
       ),
@@ -434,7 +545,7 @@ _Is there anything specific about your health I can help with?_''';
 
   Widget _buildInputArea() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
@@ -444,31 +555,48 @@ _Is there anything specific about your health I can help with?_''';
       child: SafeArea(
         child: Row(
           children: [
-            // Voice button
+            // Mic button — toggles listening
             GestureDetector(
-              onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('🎤 Voice input coming soon!'), duration: Duration(seconds: 1)),
-                );
-              },
+              onTap: _toggleListening,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: 40, height: 40,
+                decoration: BoxDecoration(
+                  color: _isListening ? AppColors.accent : AppColors.secondary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  _isListening ? Icons.mic : Icons.mic_none,
+                  color: _isListening ? Colors.white : AppColors.secondary,
+                  size: 20,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Camera button
+            GestureDetector(
+              onTap: _openCamera,
               child: Container(
-                width: 44, height: 44,
+                width: 40, height: 40,
                 decoration: BoxDecoration(
                   color: AppColors.secondary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(Icons.mic, color: AppColors.secondary, size: 22),
+                child: const Icon(Icons.camera_alt, color: AppColors.secondary, size: 20),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             // Text input
             Expanded(
               child: TextField(
                 controller: _controller,
                 onSubmitted: _sendMessage,
                 decoration: InputDecoration(
-                  hintText: 'Ask your health question...',
-                  hintStyle: const TextStyle(color: AppColors.textSecondary, fontSize: 14),
+                  hintText: _isListening ? '🎤 Listening...' : 'Ask your health question...',
+                  hintStyle: TextStyle(
+                    color: _isListening ? AppColors.accent : AppColors.textSecondary,
+                    fontSize: 14,
+                  ),
                   filled: true,
                   fillColor: AppColors.background,
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
@@ -476,7 +604,7 @@ _Is there anything specific about your health I can help with?_''';
                 ),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             // Send button
             GestureDetector(
               onTap: () => _sendMessage(_controller.text),
@@ -491,6 +619,44 @@ _Is there anything specific about your health I can help with?_''';
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _TypingDot extends StatefulWidget {
+  final int index;
+  const _TypingDot({required this.index});
+
+  @override
+  State<_TypingDot> createState() => _TypingDotState();
+}
+
+class _TypingDotState extends State<_TypingDot> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    Future.delayed(Duration(milliseconds: widget.index * 200), () {
+      if (mounted) _controller.repeat(reverse: true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.3, end: 1.0).animate(_controller),
+      child: Container(
+        width: 8, height: 8,
+        decoration: const BoxDecoration(color: AppColors.secondary, shape: BoxShape.circle),
       ),
     );
   }
