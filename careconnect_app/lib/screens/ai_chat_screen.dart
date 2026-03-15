@@ -4,6 +4,8 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'dart:io';
+import 'dart:convert';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 class AppColors {
   static const Color primary = Color(0xFF00897B);
@@ -37,11 +39,14 @@ class AIChatScreen extends StatefulWidget {
   State<AIChatScreen> createState() => _AIChatScreenState();
 }
 
-class _AIChatScreenState extends State<AIChatScreen> with TickerProviderStateMixin {
+class _AIChatScreenState extends State<AIChatScreen>
+    with TickerProviderStateMixin {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
   bool _isAITyping = false;
+  int? _activeAiMessageIndex;
+  String _aiTranscriptSoFar = '';
 
   // Speech to text
   late stt.SpeechToText _speech;
@@ -49,6 +54,11 @@ class _AIChatScreenState extends State<AIChatScreen> with TickerProviderStateMix
 
   // Image picker
   final ImagePicker _imagePicker = ImagePicker();
+
+  // WebSocket
+  WebSocketChannel? _channel;
+  final String _userId = "user_123"; // TODO: Get from auth
+  final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
   final List<String> _suggestedQuestions = [
     'Why is my BP high?',
@@ -59,104 +69,14 @@ class _AIChatScreenState extends State<AIChatScreen> with TickerProviderStateMix
     'Can I skip my evening dose?',
   ];
 
-  final Map<String, String> _aiResponses = {
-    'bp': '''High blood pressure can be caused by several factors:
-
-1. **Stress** — Try relaxation techniques like deep breathing
-2. **Salt intake** — Reduce sodium in your diet to <2000mg/day
-3. **Lack of exercise** — Aim for 30 minutes of walking daily
-4. **Medication adherence** — Take your medicines on time
-
-📊 Your recent BP readings show a slightly rising trend (140/90).
-
-⚠️ If your BP stays above 140/90 for 3+ days, please consult Dr. Sharma.
-
-_Would you like me to schedule an appointment?_''',
-    'medicine': '''Here are your current medications:
-
-💊 **Aspirin** — 1 tablet, twice daily (8 AM & 8 PM)
-   → Helps prevent blood clots and reduces heart attack risk
-
-💊 **Metformin** — 500mg, once daily (8 AM)
-   → Controls blood sugar levels for Type 2 Diabetes
-
-⚠️ **Interaction Alert**: Metformin may interact with Aspirin. Monitor for signs of low blood sugar.
-
-✅ Your adherence score: 92% (Excellent!)
-
-_Always consult your doctor before changing any dosage._''',
-    'sugar': '''Based on your recent readings:
-
-📊 **Average Blood Sugar**: 110 mg/dl (Last 7 days)
-✅ **Status**: Well controlled
-
-Normal ranges:
-• Fasting: 70-100 mg/dl
-• After meals: <140 mg/dl
-
-Your average is slightly above fasting normal but well within the after-meal range. Keep up the good work!
-
-💡 **Tips**:
-- Avoid sugary drinks
-- Eat more fiber-rich foods
-- Walk for 15 mins after meals
-
-_Your next checkup with Dr. Sharma is tomorrow at 2 PM._''',
-    'exercise': '''For your health profile (Hypertension + Diabetes), here's a recommended exercise plan:
-
-🏃 **Daily Routine**:
-• Morning walk — 30 minutes (brisk)
-• Light stretching — 10 minutes
-• Evening walk — 15 minutes (after dinner)
-
-⏰ **Best times**:
-• Morning: 6-7 AM (before breakfast)
-• Evening: 7-8 PM (1 hour after dinner)
-
-⚠️ **Precautions**:
-• Check blood sugar before exercise
-• Stay hydrated
-• Avoid intense workouts
-• Stop if you feel dizzy
-
-📈 Regular exercise can reduce BP by 5-8 mmHg!''',
-    'food': '''Foods that help lower blood pressure:
-
-🥬 **Leafy Greens** — Spinach, kale (rich in potassium)
-🍌 **Bananas** — Natural potassium source
-🫐 **Berries** — Blueberries, strawberries (antioxidants)
-🐟 **Fatty Fish** — Salmon, mackerel (omega-3)
-🧄 **Garlic** — Natural BP reducer
-🥣 **Oatmeal** — High fiber, low sodium
-🥜 **Nuts** — Almonds, walnuts (healthy fats)
-
-🚫 **Foods to AVOID**:
-• Excess salt/sodium
-• Processed foods
-• Red meat in large quantities
-• Sugary beverages & alcohol
-
-💡 **Tip**: The DASH diet is specifically designed for hypertension patients.''',
-    'skip': '''⚠️ **Please do not skip your evening dose without consulting your doctor.**
-
-Skipping medication can cause:
-• Blood pressure spikes
-• Blood sugar fluctuations
-• Reduced treatment effectiveness
-
-If you're experiencing side effects, please discuss with Dr. Sharma at your appointment tomorrow.
-
-💡 **Tip**: Set a reminder to take your medicine. I can help you with that!
-
-_Would you like me to set a reminder?_''',
-  };
-
   @override
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
-    _messages.add(ChatMessage(
-      text: '''Hello Rajesh! 👋 I'm your AI health assistant.
+    _connectWebSocket();
+    _messages.add(
+      ChatMessage(
+        text: '''Hello Rajesh! 👋 I'm your AI health assistant.
 
 I can help you with:
 • Understanding your health data
@@ -165,46 +85,133 @@ I can help you with:
 • Scheduling appointments
 
 How can I help you today?''',
-      isUser: false,
-    ));
+        isUser: false,
+      ),
+    );
   }
 
-  String _getAIResponse(String query) {
-    final lowerQuery = query.toLowerCase();
-    for (final entry in _aiResponses.entries) {
-      if (lowerQuery.contains(entry.key)) {
-        return entry.value;
-      }
+  void _connectWebSocket() {
+    // Replace with your actual backend IP if running on device/emulator
+    // 192.168.29.62 is the host PC IP for physical device testing
+    final wsUrl = Uri.parse('ws://192.168.29.62:8081/ws/$_userId/$_sessionId');
+    try {
+      _channel = WebSocketChannel.connect(wsUrl);
+      _channel?.stream.listen(
+        (data) {
+          _handleBackendMessage(data);
+        },
+        onError: (error) {
+          print('WebSocket Error: $error');
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('Connection error: $error')));
+          }
+        },
+        onDone: () {
+          print('WebSocket connection closed');
+        },
+      );
+    } catch (e) {
+      print('Could not connect: $e');
     }
-    return '''I understand your concern. Based on your health profile:
-
-• **Conditions**: Hypertension, Type 2 Diabetes
-• **Current Medicines**: Aspirin (2x daily), Metformin (1x daily)
-• **Last BP**: 140/90 mmHg
-• **Last Sugar**: 110 mg/dl
-
-I'd recommend discussing "$query" with Dr. Sharma at your appointment tomorrow (2:00 PM).
-
-_Is there anything specific about your health I can help with?_''';
   }
+
+  void _handleBackendMessage(dynamic data) {
+    if (!mounted) return;
+
+    try {
+      final Map<String, dynamic> message = jsonDecode(data as String);
+      String newText = "";
+
+      // We ONLY listen to outputTranscription to avoid duplication from the final content block
+      if (message.containsKey('outputTranscription') &&
+          message['outputTranscription'] != null) {
+        final transcription = message['outputTranscription'];
+        if (transcription.containsKey('text') &&
+            transcription['text'] != null) {
+          newText = transcription['text'];
+        }
+      }
+
+      if (newText.isNotEmpty) {
+        setState(() {
+          _isAITyping = false;
+
+          // Create a fresh AI bubble for this turn if needed.
+          if (_activeAiMessageIndex == null ||
+              _activeAiMessageIndex! < 0 ||
+              _activeAiMessageIndex! >= _messages.length ||
+              _messages[_activeAiMessageIndex!].isUser) {
+            _messages.add(ChatMessage(text: '', isUser: false));
+            _activeAiMessageIndex = _messages.length - 1;
+            _aiTranscriptSoFar = '';
+          }
+
+          // Native-audio transcription can be cumulative, so avoid double-append.
+          if (newText == _aiTranscriptSoFar) {
+            // Duplicate event; ignore.
+            return;
+          }
+
+          if (newText.startsWith(_aiTranscriptSoFar)) {
+            // Full transcript-so-far update: replace current message with latest.
+            _aiTranscriptSoFar = newText;
+          } else if (_aiTranscriptSoFar.startsWith(newText)) {
+            // Older/out-of-order partial update; ignore.
+            return;
+          } else {
+            // Delta chunk update: append.
+            _aiTranscriptSoFar += newText;
+          }
+
+          final idx = _activeAiMessageIndex!;
+          final currentMsg = _messages[idx];
+          _messages[idx] = ChatMessage(
+            text: _aiTranscriptSoFar,
+            isUser: false,
+            timestamp: currentMsg.timestamp,
+          );
+        });
+        _scrollToBottom();
+      }
+      // Handle the legacy simple format if we ever use it
+      else if (message['type'] == 'text' && message.containsKey('text')) {
+        setState(() {
+          _isAITyping = false;
+          _messages.add(ChatMessage(text: message['text'], isUser: false));
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      print('Error parsing backend message: $e');
+    }
+  }
+
+  // Removed _getAIResponse dummy logic
 
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
     setState(() {
       _messages.add(ChatMessage(text: text.trim(), isUser: true));
       _isAITyping = true;
+      _activeAiMessageIndex = null;
+      _aiTranscriptSoFar = '';
     });
+
+    // Send to backend via WebSocket
+    if (_channel != null) {
+      final payload = jsonEncode({"type": "text", "text": text.trim()});
+      _channel!.sink.add(payload);
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Not connected to server')));
+      setState(() => _isAITyping = false);
+    }
+
     _controller.clear();
     _scrollToBottom();
-    Future.delayed(const Duration(milliseconds: 800), () {
-      if (!mounted) return;
-      final response = _getAIResponse(text);
-      setState(() {
-        _isAITyping = false;
-        _messages.add(ChatMessage(text: response, isUser: false));
-      });
-      _scrollToBottom();
-    });
   }
 
   // ── VOICE INPUT ──────────────────────────────────────────────────
@@ -225,7 +232,10 @@ _Is there anything specific about your health I can help with?_''';
         if (mounted) {
           setState(() => _isListening = false);
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('🎤 Mic error: ${error.errorMsg}'), backgroundColor: Colors.red),
+            SnackBar(
+              content: Text('🎤 Mic error: ${error.errorMsg}'),
+              backgroundColor: Colors.red,
+            ),
           );
         }
       },
@@ -245,6 +255,13 @@ _Is there anything specific about your health I can help with?_''';
           }
           if (result.finalResult && result.recognizedWords.isNotEmpty) {
             _sendMessage(result.recognizedWords);
+            // Alternatively, buffer PCM audio directly:
+            // if (_channel != null) {
+            //   _channel!.sink.add(jsonEncode({
+            //     "type": "audio",
+            //     "data": base64Encode(pcmAudioBytes),
+            //   }));
+            // }
             _speech.stop();
             setState(() => _isListening = false);
           }
@@ -256,7 +273,9 @@ _Is there anything specific about your health I can help with?_''';
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('🎤 Microphone permission denied. Please allow mic access in Settings.'),
+            content: Text(
+              '🎤 Microphone permission denied. Please allow mic access in Settings.',
+            ),
             backgroundColor: Colors.red,
           ),
         );
@@ -275,46 +294,39 @@ _Is there anything specific about your health I can help with?_''';
 
       // Add the image as a user message
       setState(() {
-        _messages.add(ChatMessage(
-          text: '📷 Scanned image',
-          isUser: true,
-          imagePath: photo.path,
-        ));
+        _messages.add(
+          ChatMessage(
+            text: '📷 Scanned image',
+            isUser: true,
+            imagePath: photo.path,
+          ),
+        );
         _isAITyping = true;
       });
       _scrollToBottom();
 
-      // Simulate AI analyzing the prescription
-      Future.delayed(const Duration(milliseconds: 1200), () {
-        if (!mounted) return;
-        setState(() {
-          _isAITyping = false;
-          _messages.add(ChatMessage(
-            text: '''📷 **Prescription Scan Analysis**
+      // Read file and send base64 over WebSocket
+      final bytes = await File(photo.path).readAsBytes();
+      final base64Image = base64Encode(bytes);
 
-I've analyzed your prescription image. Here's what I found:
-
-💊 **Detected Medication**:
-• **Metformin 500mg** — Take 1 tablet after meals, twice daily
-• **Amlodipine 5mg** — Take 1 tablet at bedtime
-
-⚠️ **Important Notes**:
-• Metformin: avoid skipping doses
-• Amlodipine: do not crush or chew
-
-✅ **Added to your Medication Schedule**
-
-_Please verify with your pharmacist if anything looks incorrect._''',
-            isUser: false,
-          ));
+      if (_channel != null) {
+        final payload = jsonEncode({
+          "type": "image",
+          "data": base64Image,
+          "mimeType": "image/jpeg",
         });
-        _scrollToBottom();
-      });
+        _channel!.sink.add(payload);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Not connected to server')),
+        );
+        setState(() => _isAITyping = false);
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('📷 Camera permission denied. Please allow camera access in Settings.'),
+            content: Text('📷 Camera error: Check permissions or space.'),
             backgroundColor: Colors.red,
           ),
         );
@@ -339,6 +351,7 @@ _Please verify with your pharmacist if anything looks incorrect._''',
     _controller.dispose();
     _scrollController.dispose();
     _speech.stop();
+    _channel?.sink.close();
     super.dispose();
   }
 
@@ -350,8 +363,18 @@ _Please verify with your pharmacist if anything looks incorrect._''',
         title: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('AI Doctor', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
-            Text('Online • Ready to help', style: TextStyle(fontSize: 11, color: Colors.green)),
+            Text(
+              'AI Doctor',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            Text(
+              'Online • Ready to help',
+              style: TextStyle(fontSize: 11, color: Colors.green),
+            ),
           ],
         ),
         backgroundColor: Colors.white,
@@ -369,7 +392,10 @@ _Please verify with your pharmacist if anything looks incorrect._''',
             child: ListView.builder(
               controller: _scrollController,
               padding: const EdgeInsets.all(16),
-              itemCount: _messages.length + (_isAITyping ? 1 : 0) + (_messages.length <= 1 ? 1 : 0),
+              itemCount:
+                  _messages.length +
+                  (_isAITyping ? 1 : 0) +
+                  (_messages.length <= 1 ? 1 : 0),
               itemBuilder: (context, index) {
                 if (_messages.length <= 1 && index == _messages.length) {
                   return _buildSuggestions();
@@ -390,38 +416,90 @@ _Please verify with your pharmacist if anything looks incorrect._''',
 
   Widget _buildMessageBubble(ChatMessage message) {
     final isUser = message.isUser;
+
+    // AI Message Style (Gemini-like clean look)
+    if (!isUser) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 24),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Simple Blue Gemini Sparkle
+            Container(
+              margin: const EdgeInsets.only(right: 12, top: 4),
+              child: const Icon(
+                Icons.auto_awesome,
+                color: Color(0xFF1A73E8),
+                size: 22,
+              ),
+            ),
+            Expanded(
+              child: MarkdownBody(
+                data: message.text,
+                selectable: true,
+                styleSheet: MarkdownStyleSheet(
+                  p: const TextStyle(
+                    fontSize: 15,
+                    color: Color(0xFF1F1F1F),
+                    height: 1.5,
+                  ),
+                  h1: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                  h2: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                  h3: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                  listBullet: const TextStyle(
+                    color: Color(0xFF1F1F1F),
+                    fontSize: 15,
+                  ),
+                  strong: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1F1F1F),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // User Message Style (Light grey rounded bubble on the right)
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 24),
       child: Row(
-        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.end,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Flexible(
             child: Container(
-              padding: message.imagePath != null ? const EdgeInsets.all(6) : const EdgeInsets.all(14),
+              padding:
+                  message.imagePath != null
+                      ? const EdgeInsets.all(6)
+                      : const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
               decoration: BoxDecoration(
-                color: isUser ? AppColors.primary : Colors.white,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(16),
-                  topRight: const Radius.circular(16),
-                  bottomLeft: Radius.circular(isUser ? 16 : 4),
-                  bottomRight: Radius.circular(isUser ? 4 : 16),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
+                color: const Color(0xFFF0F4F9),
+                borderRadius: BorderRadius.circular(20),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Show image if available
                   if (message.imagePath != null) ...[
                     ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(14),
                       child: Image.file(
                         File(message.imagePath!),
                         width: 220,
@@ -429,40 +507,17 @@ _Please verify with your pharmacist if anything looks incorrect._''',
                         fit: BoxFit.cover,
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    if (message.text.isNotEmpty) const SizedBox(height: 6),
                   ],
-                  isUser && message.imagePath == null
-                      ? Text(
-                          message.text,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.white,
-                            height: 1.5,
-                          ),
-                        )
-                      : !isUser
-                          ? MarkdownBody(
-                              data: message.text,
-                              selectable: true,
-                              styleSheet: MarkdownStyleSheet(
-                                p: const TextStyle(
-                                  fontSize: 14,
-                                  color: AppColors.textPrimary,
-                                  height: 1.5,
-                                ),
-                                listBullet: const TextStyle(color: AppColors.primary, fontSize: 14),
-                                strong: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.textPrimary),
-                              ),
-                            )
-                          : const SizedBox.shrink(),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${message.timestamp.hour}:${message.timestamp.minute.toString().padLeft(2, '0')} ${message.timestamp.hour >= 12 ? 'PM' : 'AM'}',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: isUser ? Colors.white.withValues(alpha: 0.7) : AppColors.textSecondary,
+                  if (message.imagePath == null || message.text.isNotEmpty)
+                    Text(
+                      message.text,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        color: Color(0xFF1F1F1F),
+                        height: 1.5,
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -474,22 +529,24 @@ _Please verify with your pharmacist if anything looks incorrect._''',
 
   Widget _buildTypingIndicator() {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 24),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
+            margin: const EdgeInsets.only(right: 12),
+            child: const Icon(
+              Icons.auto_awesome,
+              color: Color(0xFF1A73E8),
+              size: 22,
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildDot(0), const SizedBox(width: 4),
-                _buildDot(1), const SizedBox(width: 4),
-                _buildDot(2),
-              ],
+          ),
+          const Text(
+            "Thinking...",
+            style: TextStyle(
+              fontSize: 14,
+              fontStyle: FontStyle.italic,
+              color: Color(0xFF5F6368),
             ),
           ),
         ],
@@ -507,35 +564,63 @@ _Please verify with your pharmacist if anything looks incorrect._''',
         children: [
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 4),
-            child: Text('💡 Suggested questions:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
+            child: Text(
+              '💡 Suggested questions:',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textSecondary,
+              ),
+            ),
           ),
           const SizedBox(height: 12),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
             child: Row(
-              children: _suggestedQuestions.map((q) => Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: GestureDetector(
-                  onTap: () => _sendMessage(q),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(color: AppColors.secondary.withValues(alpha: 0.2)),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.secondary.withValues(alpha: 0.05),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
+              children:
+                  _suggestedQuestions
+                      .map(
+                        (q) => Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: GestureDetector(
+                            onTap: () => _sendMessage(q),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(
+                                  color: AppColors.secondary.withValues(
+                                    alpha: 0.2,
+                                  ),
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.secondary.withValues(
+                                      alpha: 0.05,
+                                    ),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Text(
+                                q,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: AppColors.secondary,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
-                      ],
-                    ),
-                    child: Text(q, style: const TextStyle(fontSize: 13, color: AppColors.secondary, fontWeight: FontWeight.w500)),
-                  ),
-                ),
-              )).toList(),
+                      )
+                      .toList(),
             ),
           ),
         ],
@@ -549,7 +634,11 @@ _Please verify with your pharmacist if anything looks incorrect._''',
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 8, offset: const Offset(0, -2)),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 8,
+            offset: const Offset(0, -2),
+          ),
         ],
       ),
       child: SafeArea(
@@ -560,9 +649,13 @@ _Please verify with your pharmacist if anything looks incorrect._''',
               onTap: _toggleListening,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                width: 40, height: 40,
+                width: 40,
+                height: 40,
                 decoration: BoxDecoration(
-                  color: _isListening ? AppColors.accent : AppColors.secondary.withValues(alpha: 0.1),
+                  color:
+                      _isListening
+                          ? AppColors.accent
+                          : AppColors.secondary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(
@@ -577,12 +670,17 @@ _Please verify with your pharmacist if anything looks incorrect._''',
             GestureDetector(
               onTap: _openCamera,
               child: Container(
-                width: 40, height: 40,
+                width: 40,
+                height: 40,
                 decoration: BoxDecoration(
                   color: AppColors.secondary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(Icons.camera_alt, color: AppColors.secondary, size: 20),
+                child: const Icon(
+                  Icons.camera_alt,
+                  color: AppColors.secondary,
+                  size: 20,
+                ),
               ),
             ),
             const SizedBox(width: 10),
@@ -592,15 +690,27 @@ _Please verify with your pharmacist if anything looks incorrect._''',
                 controller: _controller,
                 onSubmitted: _sendMessage,
                 decoration: InputDecoration(
-                  hintText: _isListening ? '🎤 Listening...' : 'Ask your health question...',
+                  hintText:
+                      _isListening
+                          ? '🎤 Listening...'
+                          : 'Ask your health question...',
                   hintStyle: TextStyle(
-                    color: _isListening ? AppColors.accent : AppColors.textSecondary,
+                    color:
+                        _isListening
+                            ? AppColors.accent
+                            : AppColors.textSecondary,
                     fontSize: 14,
                   ),
                   filled: true,
                   fillColor: AppColors.background,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                 ),
               ),
             ),
@@ -609,7 +719,8 @@ _Please verify with your pharmacist if anything looks incorrect._''',
             GestureDetector(
               onTap: () => _sendMessage(_controller.text),
               child: Container(
-                width: 44, height: 44,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
                   color: AppColors.primary,
                   borderRadius: BorderRadius.circular(12),
@@ -632,13 +743,17 @@ class _TypingDot extends StatefulWidget {
   State<_TypingDot> createState() => _TypingDotState();
 }
 
-class _TypingDotState extends State<_TypingDot> with SingleTickerProviderStateMixin {
+class _TypingDotState extends State<_TypingDot>
+    with SingleTickerProviderStateMixin {
   late AnimationController _controller;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
     Future.delayed(Duration(milliseconds: widget.index * 200), () {
       if (mounted) _controller.repeat(reverse: true);
     });
@@ -655,8 +770,12 @@ class _TypingDotState extends State<_TypingDot> with SingleTickerProviderStateMi
     return FadeTransition(
       opacity: Tween<double>(begin: 0.3, end: 1.0).animate(_controller),
       child: Container(
-        width: 8, height: 8,
-        decoration: const BoxDecoration(color: AppColors.secondary, shape: BoxShape.circle),
+        width: 8,
+        height: 8,
+        decoration: const BoxDecoration(
+          color: AppColors.secondary,
+          shape: BoxShape.circle,
+        ),
       ),
     );
   }
