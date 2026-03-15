@@ -1,0 +1,2 @@
+C:/Users/prudh/OneDrive/Desktop/Anusha/Gemini CareConnect/CareConnect/careconnect_app/android/app/.cxx/Debug/36371b21/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/prudh/OneDrive/Desktop/Anusha/Gemini CareConnect/CareConnect/careconnect_app/android/app/.cxx/Debug/36371b21/armeabi-v7a/CMakeFiles/rebuild_cache.dir

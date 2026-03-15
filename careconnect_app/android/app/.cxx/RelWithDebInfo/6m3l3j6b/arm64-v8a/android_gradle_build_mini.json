@@ -1,0 +1,20 @@
+{
+  "buildFiles": [
+    "C:\\flutter\\flutter\\packages\\flutter_tools\\gradle\\src\\main\\groovy\\CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "C:\\Android\\cmake\\3.22.1\\bin\\ninja.exe",
+      "-C",
+      "C:\\Users\\prudh\\OneDrive\\Desktop\\Anusha\\Gemini CareConnect\\CareConnect\\careconnect_app\\android\\app\\.cxx\\RelWithDebInfo\\6m3l3j6b\\arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "C:\\Android\\cmake\\3.22.1\\bin\\ninja.exe",
+    "-C",
+    "C:\\Users\\prudh\\OneDrive\\Desktop\\Anusha\\Gemini CareConnect\\CareConnect\\careconnect_app\\android\\app\\.cxx\\RelWithDebInfo\\6m3l3j6b\\arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {}
+}
