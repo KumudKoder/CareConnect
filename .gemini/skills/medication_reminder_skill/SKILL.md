@@ -6,19 +6,23 @@ description: Help users set, update, and follow medication reminders in CareConn
 # Medication Reminder Skill (CareConnect AI)
 
 ## Purpose
+
 Support users in reminder adherence workflows: create reminder, update timing, mark dose taken, missed dose guidance (non-prescriptive), and follow-up nudges.
 
 ## Use this skill when
+
 - “Remind me to take medicine.”
 - “I missed my dose, what should I do?”
 - “Change my reminder to 9 PM.”
 
 ## Safety boundaries
+
 - Do not provide dose adjustment instructions.
 - For missed doses, provide conservative guidance: check prescription label and contact clinician/pharmacist if unsure.
 - Escalate urgently if severe symptoms are present (use `symptom_triage_skill`).
 
 ## Data to collect
+
 - Medication name
 - Prescribed schedule (if known)
 - Reminder times + timezone
@@ -26,6 +30,7 @@ Support users in reminder adherence workflows: create reminder, update timing, m
 - Start/end date (optional)
 
 ## Workflow
+
 1. Confirm reminder intent.
 2. Capture medication + schedule details.
 3. Propose reminder plan in clear bullets.
@@ -33,9 +38,11 @@ Support users in reminder adherence workflows: create reminder, update timing, m
 5. Offer adherence check-in reminder.
 
 ## Output format
+
 1. **Medication reminder plan**
 2. **Safety note**
 3. **Next action in CareConnect**
 
 ## Example safety line
+
 “I can help with reminders, but for dose changes or missed-dose uncertainty, please check your prescription label or contact your clinician/pharmacist.”

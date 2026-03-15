@@ -3,6 +3,7 @@
 These skills are for **CareConnect AI** (your app assistant), powered by Gemini models.
 
 ## Available skills
+
 - `symptom_triage_skill/` — Symptom intake, risk stratification, and safe escalation.
 - `appointment_scheduler_skill/` — Booking/reschedule/cancel workflows.
 - `medication_reminder_skill/` — Reminder and adherence support.
@@ -13,6 +14,7 @@ These skills are for **CareConnect AI** (your app assistant), powered by Gemini 
 - `careconnect_capabilities_skill/` — Standard answer for “what can you do?”.
 
 ## Recommended runtime flow
+
 1. Apply `careconnect_intent_router_skill` first.
 2. Route to the chosen primary skill.
 3. Return response in that skill’s output format.
@@ -20,5 +22,6 @@ These skills are for **CareConnect AI** (your app assistant), powered by Gemini 
 5. If user asks capability questions, route to `careconnect_capabilities_skill`.
 
 ## Branding rule
+
 User-facing assistant name: **CareConnect AI**.
 Provider/model mention is optional and should not replace the assistant name.

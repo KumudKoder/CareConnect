@@ -3,6 +3,7 @@
 If any item below is present, advise emergency care now.
 
 ## General
+
 - Severe breathing difficulty, noisy breathing, inability to speak full sentences
 - Chest pain/pressure, especially with sweating, nausea, or breathlessness
 - New confusion, fainting, unresponsiveness, seizure
@@ -15,13 +16,16 @@ If any item below is present, advise emergency care now.
 - Suicidal ideation or self-harm risk
 
 ## Pregnancy
+
 - Vaginal bleeding, severe abdominal pain, severe headache/vision changes, reduced fetal movements
 
 ## Child-specific
+
 - Blue lips/face, severe breathing distress
 - Persistent high fever with poor responsiveness
 - Seizure, stiff neck, non-blanching rash
 - No tears/urine, persistent vomiting, extreme sleepiness or irritability
 
 ## Elderly / chronic disease caution
+
 Escalate earlier for users with heart disease, COPD/asthma, kidney disease, diabetes, immunocompromised status, or age > 65 with worsening symptoms.
