@@ -89,6 +89,8 @@ app.*.map.json
 **/android/gradlew.bat
 **/android/GeneratedPluginRegistrant.java
 **/android/.cxx/
+**/android/app/.cxx/
+**/android/app/.cxx/**
 *.apk
 *.aab
 
@@ -131,6 +133,9 @@ coverage/
 .env
 .env.*
 *.env
+google-services.json
+**/android/app/google-services.json
+**/ios/Runner/GoogleService-Info.plist
 *.keystore
 *.jks
 key.properties

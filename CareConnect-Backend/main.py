@@ -10,13 +10,24 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
-from firebase_admin import auth, initialize_app
+from firebase_admin import auth, initialize_app, get_app
+
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "careconnect-3484b")
+SKIP_TOKEN_VERIFY = os.environ.get("SKIP_TOKEN_VERIFY", "false").lower() == "true"
 
 # Initialize Firebase Admin (ADC on Cloud Run service account or local GOOGLE_APPLICATION_CREDENTIALS)
 try:
-    initialize_app()
+    get_app()
 except Exception as _init_err:
-    logging.getLogger(__name__).warning(f'Firebase Admin init issue: {_init_err}')
+    try:
+        initialize_app(options={"projectId": FIREBASE_PROJECT_ID})
+        logging.getLogger(__name__).info(
+            f"Firebase Admin initialized with projectId={FIREBASE_PROJECT_ID}"
+        )
+    except Exception as _init_err_2:
+        logging.getLogger(__name__).warning(
+            f'Firebase Admin init issue: {_init_err}; fallback failed: {_init_err_2}'
+        )
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from google.adk.agents import Agent
 from google.adk.agents.live_request_queue import LiveRequestQueue
@@ -122,20 +133,25 @@ async def websocket_endpoint(
 ) -> None:
     """Bidirectional streaming WebSocket between Flutter app and Gemini."""
 
-        # Auth: Verify Firebase ID token
+    # Auth: Verify Firebase ID token
+    if SKIP_TOKEN_VERIFY:
+        await websocket.accept()
+        logger.warning("SKIP_TOKEN_VERIFY=true, bypassing Firebase token verification")
+    
     token = websocket.query_params.get("token") if hasattr(websocket, "query_params") else None
-    try:
-        decoded = auth.verify_id_token(token) if token else None
-        uid = decoded.get("uid") if decoded else None
-        if not uid:
+    if not SKIP_TOKEN_VERIFY:
+        try:
+            decoded = auth.verify_id_token(token) if token else None
+            uid = decoded.get("uid") if decoded else None
+            if not uid:
+                await websocket.close(code=4401)
+                return
+            user_id = uid
+        except Exception as e:
+            logger.warning(f"Auth failed (project={FIREBASE_PROJECT_ID}): {e}")
             await websocket.close(code=4401)
             return
-        user_id = uid
-    except Exception as e:
-        logger.warning(f"Auth failed: {e}")
-        await websocket.close(code=4401)
-        return
-    await websocket.accept()
+        await websocket.accept()
     logger.debug(f"WS accepted: user={user_id} session={session_id}")
 
     # ── Detect model type and set response modality ───────────────────────────

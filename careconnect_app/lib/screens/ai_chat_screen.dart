@@ -1,11 +1,13 @@
-import 'package:flutter/material.dart';
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'dart:io';
-import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class AppColors {
@@ -21,16 +23,102 @@ class ChatMessage {
   final String text;
   final bool isUser;
   final DateTime timestamp;
-  bool isTyping;
-  final String? imagePath; // for camera images
+  final String? imagePath;
 
   ChatMessage({
     required this.text,
     required this.isUser,
     DateTime? timestamp,
-    this.isTyping = false,
     this.imagePath,
   }) : timestamp = timestamp ?? DateTime.now();
+
+  Map<String, dynamic> toJson() => {
+    'text': text,
+    'isUser': isUser,
+    'timestamp': timestamp.toIso8601String(),
+    'imagePath': imagePath,
+  };
+
+  static ChatMessage fromJson(Map<String, dynamic> j) => ChatMessage(
+    text: j['text'] as String? ?? '',
+    isUser: j['isUser'] as bool? ?? false,
+    timestamp:
+        j['timestamp'] != null
+            ? DateTime.tryParse(j['timestamp'] as String) ?? DateTime.now()
+            : DateTime.now(),
+    imagePath: j['imagePath'] as String?,
+  );
+}
+
+class ChatSession {
+  final String id;
+  String title;
+  final DateTime createdAt;
+  final List<ChatMessage> messages;
+
+  ChatSession({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+    required this.messages,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'createdAt': createdAt.toIso8601String(),
+    'messages': messages.map((m) => m.toJson()).toList(),
+  };
+
+  static ChatSession fromJson(Map<String, dynamic> j) => ChatSession(
+    id: j['id'] as String,
+    title: j['title'] as String? ?? 'Chat',
+    createdAt:
+        j['createdAt'] != null
+            ? DateTime.tryParse(j['createdAt'] as String) ?? DateTime.now()
+            : DateTime.now(),
+    messages:
+        (j['messages'] as List<dynamic>?)
+            ?.map((m) => ChatMessage.fromJson(m as Map<String, dynamic>))
+            .toList() ??
+        [],
+  );
+}
+
+class ChatStorage {
+  static const String _sessionsKey = 'cc_chat_sessions_v1';
+
+  static Future<List<ChatSession>> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_sessionsKey);
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      final sessions =
+          list
+              .map(
+                (e) => ChatSession.fromJson((e as Map).cast<String, dynamic>()),
+              )
+              .toList();
+      sessions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return sessions;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> save(List<ChatSession> sessions) async {
+    final prefs = await SharedPreferences.getInstance();
+    final limited = sessions.length > 30 ? sessions.sublist(0, 30) : sessions;
+    final raw = jsonEncode(limited.map((s) => s.toJson()).toList());
+    await prefs.setString(_sessionsKey, raw);
+  }
+
+  static Future<void> deleteSession(String sessionId) async {
+    final sessions = await load();
+    sessions.removeWhere((s) => s.id == sessionId);
+    await save(sessions);
+  }
 }
 
 class AIChatScreen extends StatefulWidget {
@@ -42,24 +130,32 @@ class AIChatScreen extends StatefulWidget {
 
 class _AIChatScreenState extends State<AIChatScreen>
     with TickerProviderStateMixin {
+  static const String _backendBase = String.fromEnvironment(
+    'CARECONNECT_WS_BASE',
+    defaultValue: 'ws://192.168.29.62:8081',
+  );
+
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   final List<ChatMessage> _messages = [];
   bool _isAITyping = false;
   int? _activeAiMessageIndex;
   String _aiTranscriptSoFar = '';
 
-  // Speech to text
+  List<ChatSession> _sessions = [];
+  late String _currentSessionId;
+  bool _isTemporary = false;
+
   late stt.SpeechToText _speech;
   bool _isListening = false;
-
-  // Image picker
   final ImagePicker _imagePicker = ImagePicker();
 
-  // WebSocket
   WebSocketChannel? _channel;
-  late String _userId;
-  final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+  StreamSubscription? _channelSubscription;
+  bool _disposed = false;
+  String _userId = 'guest';
 
   final List<String> _suggestedQuestions = [
     'Why is my BP high?',
@@ -75,49 +171,145 @@ class _AIChatScreenState extends State<AIChatScreen>
     super.initState();
     _speech = stt.SpeechToText();
     final u = FirebaseAuth.instance.currentUser;
-    if (u != null) { _userId = u.uid; }
+    if (u != null) _userId = u.uid;
+    _currentSessionId = DateTime.now().millisecondsSinceEpoch.toString();
+    _loadSessions().then((_) => _startNewSession());
+  }
+
+  Future<void> _loadSessions() async {
+    final loaded = await ChatStorage.load();
+    if (mounted) setState(() => _sessions = loaded);
+  }
+
+  void _startNewSession({bool temporary = false}) {
+    _saveCurrentSession();
+    final newId = DateTime.now().millisecondsSinceEpoch.toString();
+    final u = FirebaseAuth.instance.currentUser;
+    final userName = u?.displayName ?? u?.email?.split('@').first ?? 'there';
+
+    setState(() {
+      _currentSessionId = newId;
+      _isTemporary = temporary;
+      _messages.clear();
+      _isAITyping = false;
+      _activeAiMessageIndex = null;
+      _aiTranscriptSoFar = '';
+      _messages.add(
+        ChatMessage(
+          text:
+              temporary
+                  ? '⚡ Temporary chat — this conversation will be cleared when you close it.\n\nHello $userName! How can I help you today?'
+                  : 'Hello $userName! 👋 I\'m your AI health assistant.\n\nI can help you with:\n• Understanding your health data\n• Medicine information & interactions\n• Exercise and diet recommendations\n• Scheduling appointments\n\nHow can I help you today?',
+          isUser: false,
+        ),
+      );
+    });
+
+    _channelSubscription?.cancel();
+    _channel?.sink.close();
+    _channel = null;
     _connectWebSocket();
-    _messages.add(
-      ChatMessage(
-        text: '''Hello Rajesh! 👋 I'm your AI health assistant.
+  }
 
-I can help you with:
-• Understanding your health data
-• Medicine information & interactions
-• Exercise and diet recommendations
-• Scheduling appointments
+  void _loadSession(ChatSession session) {
+    _saveCurrentSession();
+    _channelSubscription?.cancel();
+    _channel?.sink.close();
+    _channel = null;
 
-How can I help you today?''',
-        isUser: false,
-      ),
+    setState(() {
+      _currentSessionId = session.id;
+      _isTemporary = false;
+      _messages
+        ..clear()
+        ..addAll(session.messages);
+      _isAITyping = false;
+      _activeAiMessageIndex = null;
+      _aiTranscriptSoFar = '';
+    });
+
+    _connectWebSocket();
+    _scrollToBottom();
+  }
+
+  void _saveCurrentSession() {
+    if (_isTemporary) return;
+    if (_messages.isEmpty) return;
+    final hasUserMessage = _messages.any((m) => m.isUser);
+    if (!hasUserMessage) return;
+
+    final firstUserMsg = _messages.firstWhere(
+      (m) => m.isUser,
+      orElse: () => ChatMessage(text: 'Chat', isUser: true),
     );
+    final title =
+        firstUserMsg.text.length > 40
+            ? '${firstUserMsg.text.substring(0, 40)}…'
+            : firstUserMsg.text;
+
+    final updated = ChatSession(
+      id: _currentSessionId,
+      title: title,
+      createdAt: _messages.first.timestamp,
+      messages: List.from(_messages),
+    );
+
+    final idx = _sessions.indexWhere((s) => s.id == _currentSessionId);
+    if (idx >= 0) {
+      _sessions[idx] = updated;
+    } else {
+      _sessions.insert(0, updated);
+    }
+
+    ChatStorage.save(_sessions);
+  }
+
+  Future<void> _deleteSession(String sessionId) async {
+    await ChatStorage.deleteSession(sessionId);
+    final sessions = await ChatStorage.load();
+    if (mounted) setState(() => _sessions = sessions);
   }
 
   Future<void> _connectWebSocket() async {
-    // Replace with your actual backend IP if running on device/emulator
-    // 192.168.29.62 is the host PC IP for physical device testing
-    final token = await FirebaseAuth.instance.currentUser?.getIdToken() ?? '';
-    final wsUrl = Uri.parse('ws://192.168.29.62:8081/ws/$_userId/$_sessionId?token=' + token);
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    _userId = user.uid;
+    final token = await user.getIdToken(true);
+
+    final baseUri = Uri.parse(_backendBase);
+    final wsScheme =
+        baseUri.scheme == 'https'
+            ? 'wss'
+            : (baseUri.scheme == 'http' ? 'ws' : baseUri.scheme);
+
+    final wsUrl = Uri(
+      scheme: wsScheme,
+      host: baseUri.host,
+      port: baseUri.hasPort ? baseUri.port : null,
+      path: '/ws/$_userId/$_currentSessionId',
+      queryParameters: {'token': token},
+    );
+
     try {
       _channel = WebSocketChannel.connect(wsUrl);
-      _channel?.stream.listen(
-        (data) {
-          _handleBackendMessage(data);
-        },
+      _channelSubscription = _channel?.stream.listen(
+        _handleBackendMessage,
         onError: (error) {
-          print('WebSocket Error: $error');
-          if (mounted) {
+          if (!_disposed && mounted) {
             ScaffoldMessenger.of(
               context,
             ).showSnackBar(SnackBar(content: Text('Connection error: $error')));
           }
         },
-        onDone: () {
-          print('WebSocket connection closed');
-        },
+        onDone: () => _channel = null,
       );
     } catch (e) {
-      print('Could not connect: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not connect to backend: $e')),
+        );
+      }
     }
   }
 
@@ -125,26 +317,24 @@ How can I help you today?''',
     if (!mounted) return;
 
     try {
-      final Map<String, dynamic> message = jsonDecode(data as String);
-      String newText = "";
+      final message = jsonDecode(data as String) as Map<String, dynamic>;
+      String newText = '';
 
-      // We ONLY listen to outputTranscription to avoid duplication from the final content block
       if (message.containsKey('outputTranscription') &&
           message['outputTranscription'] != null) {
-        final transcription = message['outputTranscription'];
-        if (transcription.containsKey('text') &&
-            transcription['text'] != null) {
-          newText = transcription['text'];
+        final t = message['outputTranscription'];
+        if (t is Map && t['text'] is String) {
+          newText = t['text'] as String;
         }
+      } else if (message['type'] == 'text' && message['text'] is String) {
+        newText = message['text'] as String;
       }
 
       if (newText.isNotEmpty) {
         setState(() {
           _isAITyping = false;
 
-          // Create a fresh AI bubble for this turn if needed.
           if (_activeAiMessageIndex == null ||
-              _activeAiMessageIndex! < 0 ||
               _activeAiMessageIndex! >= _messages.length ||
               _messages[_activeAiMessageIndex!].isUser) {
             _messages.add(ChatMessage(text: '', isUser: false));
@@ -152,50 +342,36 @@ How can I help you today?''',
             _aiTranscriptSoFar = '';
           }
 
-          // Native-audio transcription can be cumulative, so avoid double-append.
           if (newText == _aiTranscriptSoFar) {
-            // Duplicate event; ignore.
             return;
           }
 
           if (newText.startsWith(_aiTranscriptSoFar)) {
-            // Full transcript-so-far update: replace current message with latest.
             _aiTranscriptSoFar = newText;
-          } else if (_aiTranscriptSoFar.startsWith(newText)) {
-            // Older/out-of-order partial update; ignore.
-            return;
-          } else {
-            // Delta chunk update: append.
+          } else if (!_aiTranscriptSoFar.startsWith(newText)) {
             _aiTranscriptSoFar += newText;
+          } else {
+            return;
           }
 
           final idx = _activeAiMessageIndex!;
-          final currentMsg = _messages[idx];
+          final cur = _messages[idx];
           _messages[idx] = ChatMessage(
             text: _aiTranscriptSoFar,
             isUser: false,
-            timestamp: currentMsg.timestamp,
+            timestamp: cur.timestamp,
           );
         });
-        _scrollToBottom();
-      }
-      // Handle the legacy simple format if we ever use it
-      else if (message['type'] == 'text' && message.containsKey('text')) {
-        setState(() {
-          _isAITyping = false;
-          _messages.add(ChatMessage(text: message['text'], isUser: false));
-        });
-        _scrollToBottom();
-      }
-    } catch (e) {
-      print('Error parsing backend message: $e');
-    }
-  }
 
-  // Removed _getAIResponse dummy logic
+        _scrollToBottom();
+        if (!_isTemporary) _saveCurrentSession();
+      }
+    } catch (_) {}
+  }
 
   void _sendMessage(String text) {
     if (text.trim().isEmpty) return;
+
     setState(() {
       _messages.add(ChatMessage(text: text.trim(), isUser: true));
       _isAITyping = true;
@@ -203,22 +379,27 @@ How can I help you today?''',
       _aiTranscriptSoFar = '';
     });
 
-    // Send to backend via WebSocket
     if (_channel != null) {
-      final payload = jsonEncode({"type": "text", "text": text.trim()});
-      _channel!.sink.add(payload);
+      _channel!.sink.add(jsonEncode({'type': 'text', 'text': text.trim()}));
     } else {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Not connected to server')));
+      final isSignedIn = FirebaseAuth.instance.currentUser != null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isSignedIn
+                ? 'Not connected to server'
+                : 'Sign in to chat with the AI backend.',
+          ),
+        ),
+      );
       setState(() => _isAITyping = false);
     }
 
     _controller.clear();
     _scrollToBottom();
+    if (!_isTemporary) _saveCurrentSession();
   }
 
-  // ── VOICE INPUT ──────────────────────────────────────────────────
   Future<void> _toggleListening() async {
     if (_isListening) {
       await _speech.stop();
@@ -257,15 +438,9 @@ How can I help you today?''',
               );
             });
           }
+
           if (result.finalResult && result.recognizedWords.isNotEmpty) {
             _sendMessage(result.recognizedWords);
-            // Alternatively, buffer PCM audio directly:
-            // if (_channel != null) {
-            //   _channel!.sink.add(jsonEncode({
-            //     "type": "audio",
-            //     "data": base64Encode(pcmAudioBytes),
-            //   }));
-            // }
             _speech.stop();
             setState(() => _isListening = false);
           }
@@ -277,9 +452,7 @@ How can I help you today?''',
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
-              '🎤 Microphone permission denied. Please allow mic access in Settings.',
-            ),
+            content: Text('🎤 Microphone permission denied.'),
             backgroundColor: Colors.red,
           ),
         );
@@ -287,50 +460,71 @@ How can I help you today?''',
     }
   }
 
-  // ── CAMERA INPUT ─────────────────────────────────────────────────
-  Future<void> _openCamera() async {
-    try {
-      final XFile? photo = await _imagePicker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 80,
-      );
-      if (photo == null || !mounted) return;
+  Future<void> _openCamera() => _pickAndSendImage(ImageSource.camera);
+  Future<void> _openGallery() => _pickAndSendImage(ImageSource.gallery);
 
-      // Add the image as a user message
+  Future<void> _pickAndSendImage(ImageSource source) async {
+    try {
+      final photo = await _imagePicker.pickImage(
+        source: source,
+        imageQuality: 80,
+        maxWidth: 1280,
+        maxHeight: 1280,
+      );
+
+      if (photo == null || !mounted || _disposed) return;
+
       setState(() {
         _messages.add(
           ChatMessage(
-            text: '📷 Scanned image',
+            text:
+                source == ImageSource.camera
+                    ? '📷 Captured image'
+                    : '🖼️ Selected image',
             isUser: true,
             imagePath: photo.path,
           ),
         );
         _isAITyping = true;
+        _activeAiMessageIndex = null;
+        _aiTranscriptSoFar = '';
       });
+
       _scrollToBottom();
 
-      // Read file and send base64 over WebSocket
-      final bytes = await File(photo.path).readAsBytes();
-      final base64Image = base64Encode(bytes);
-
-      if (_channel != null) {
-        final payload = jsonEncode({
-          "type": "image",
-          "data": base64Image,
-          "mimeType": "image/jpeg",
-        });
-        _channel!.sink.add(payload);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Not connected to server')),
-        );
-        setState(() => _isAITyping = false);
+      if (_channel == null) {
+        if (mounted && !_disposed) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Not connected to server')),
+          );
+          setState(() => _isAITyping = false);
+        }
+        return;
       }
-    } catch (e) {
-      if (mounted) {
+
+      final bytes = await photo.readAsBytes();
+      final mimeType =
+          photo.path.toLowerCase().endsWith('.png')
+              ? 'image/png'
+              : 'image/jpeg';
+
+      _channel!.sink.add(
+        jsonEncode({
+          'type': 'image',
+          'data': base64Encode(bytes),
+          'mimeType': mimeType,
+        }),
+      );
+    } catch (_) {
+      if (mounted && !_disposed) {
+        setState(() => _isAITyping = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('📷 Camera error: Check permissions or space.'),
+          SnackBar(
+            content: Text(
+              source == ImageSource.camera
+                  ? '📷 Camera failed. Check permissions.'
+                  : '🖼️ Gallery failed. Check permissions.',
+            ),
             backgroundColor: Colors.red,
           ),
         );
@@ -352,6 +546,9 @@ How can I help you today?''',
 
   @override
   void dispose() {
+    _disposed = true;
+    _saveCurrentSession();
+    _channelSubscription?.cancel();
     _controller.dispose();
     _scrollController.dispose();
     _speech.stop();
@@ -362,22 +559,34 @@ How can I help you today?''',
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
       backgroundColor: AppColors.background,
+      drawer: _buildDrawer(),
       appBar: AppBar(
-        title: const Column(
+        automaticallyImplyLeading: false,
+        leading: IconButton(
+          icon: const Icon(Icons.menu, color: AppColors.textPrimary),
+          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+        ),
+        title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'AI Doctor',
-              style: TextStyle(
+              _isTemporary ? '⚡ Temporary Chat' : 'AI Doctor',
+              style: const TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textPrimary,
               ),
             ),
             Text(
-              'Online • Ready to help',
-              style: TextStyle(fontSize: 11, color: Colors.green),
+              _isTemporary
+                  ? 'Not saved • closes when you leave'
+                  : 'Online • Ready to help',
+              style: TextStyle(
+                fontSize: 11,
+                color: _isTemporary ? AppColors.accent : Colors.green,
+              ),
             ),
           ],
         ),
@@ -385,13 +594,33 @@ How can I help you today?''',
         elevation: 1,
         actions: [
           IconButton(
-            icon: const Icon(Icons.more_vert, color: AppColors.textPrimary),
-            onPressed: () {},
+            icon: const Icon(
+              Icons.add_comment_outlined,
+              color: AppColors.textPrimary,
+            ),
+            tooltip: 'New chat',
+            onPressed: _startNewSession,
           ),
         ],
       ),
       body: Column(
         children: [
+          if (_isTemporary)
+            Container(
+              width: double.infinity,
+              color: AppColors.accent.withValues(alpha: 0.08),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              child: const Row(
+                children: [
+                  Icon(Icons.flash_on, size: 14, color: AppColors.accent),
+                  SizedBox(width: 6),
+                  Text(
+                    'Temporary mode — this chat will not be saved.',
+                    style: TextStyle(fontSize: 11, color: AppColors.accent),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: ListView.builder(
               controller: _scrollController,
@@ -418,17 +647,208 @@ How can I help you today?''',
     );
   }
 
-  Widget _buildMessageBubble(ChatMessage message) {
-    final isUser = message.isUser;
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: Colors.white,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.08),
+                border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+              ),
+              child: const Text(
+                '💬 Chats',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            _drawerActionTile(
+              icon: Icons.add_comment_outlined,
+              label: 'New Chat',
+              color: AppColors.primary,
+              onTap: () {
+                Navigator.pop(context);
+                _startNewSession();
+              },
+            ),
+            _drawerActionTile(
+              icon: Icons.flash_on_outlined,
+              label: 'Temporary Chat',
+              color: AppColors.accent,
+              subtitle: 'Not saved when closed',
+              onTap: () {
+                Navigator.pop(context);
+                _startNewSession(temporary: true);
+              },
+            ),
+            Divider(color: Colors.grey.shade200, height: 1),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 12, 16, 6),
+              child: Text(
+                'PREVIOUS CHATS',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textSecondary,
+                  letterSpacing: 0.8,
+                ),
+              ),
+            ),
+            Expanded(
+              child:
+                  _sessions.isEmpty
+                      ? const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text(
+                            'No previous chats yet.\nStart a new chat above.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ),
+                      )
+                      : ListView.builder(
+                        itemCount: _sessions.length,
+                        itemBuilder: (context, i) {
+                          final session = _sessions[i];
+                          final isActive = session.id == _currentSessionId;
+                          return Dismissible(
+                            key: Key(session.id),
+                            direction: DismissDirection.endToStart,
+                            background: Container(
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 16),
+                              color: AppColors.accent.withValues(alpha: 0.15),
+                              child: const Icon(
+                                Icons.delete_outline,
+                                color: AppColors.accent,
+                              ),
+                            ),
+                            onDismissed: (_) => _deleteSession(session.id),
+                            child: ListTile(
+                              selected: isActive,
+                              selectedTileColor: AppColors.primary.withValues(
+                                alpha: 0.07,
+                              ),
+                              leading: CircleAvatar(
+                                radius: 18,
+                                backgroundColor:
+                                    isActive
+                                        ? AppColors.primary
+                                        : AppColors.secondary.withValues(
+                                          alpha: 0.1,
+                                        ),
+                                child: Icon(
+                                  Icons.chat_bubble_outline,
+                                  size: 16,
+                                  color:
+                                      isActive
+                                          ? Colors.white
+                                          : AppColors.secondary,
+                                ),
+                              ),
+                              title: Text(
+                                session.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              subtitle: Text(
+                                _formatDate(session.createdAt),
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                              onTap: () {
+                                Navigator.pop(context);
+                                _loadSession(session);
+                              },
+                            ),
+                          );
+                        },
+                      ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-    // AI Message Style (Gemini-like clean look)
-    if (!isUser) {
+  Widget _drawerActionTile({
+    required IconData icon,
+    required String label,
+    required Color color,
+    String? subtitle,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      leading: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(icon, color: color, size: 18),
+      ),
+      title: Text(
+        label,
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      subtitle:
+          subtitle != null
+              ? Text(
+                subtitle,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                ),
+              )
+              : null,
+      onTap: onTap,
+    );
+  }
+
+  String _formatDate(DateTime dt) {
+    final now = DateTime.now();
+    if (dt.year == now.year && dt.month == now.month && dt.day == now.day) {
+      final h = dt.hour.toString().padLeft(2, '0');
+      final m = dt.minute.toString().padLeft(2, '0');
+      return 'Today $h:$m';
+    }
+
+    final yesterday = now.subtract(const Duration(days: 1));
+    if (dt.year == yesterday.year &&
+        dt.month == yesterday.month &&
+        dt.day == yesterday.day) {
+      return 'Yesterday';
+    }
+
+    return '${dt.day}/${dt.month}/${dt.year}';
+  }
+
+  Widget _buildMessageBubble(ChatMessage message) {
+    if (!message.isUser) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 24),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Simple Blue Gemini Sparkle
             Container(
               margin: const EdgeInsets.only(right: 12, top: 4),
               child: const Icon(
@@ -478,7 +898,6 @@ How can I help you today?''',
       );
     }
 
-    // User Message Style (Light grey rounded bubble on the right)
     return Padding(
       padding: const EdgeInsets.only(bottom: 24),
       child: Row(
@@ -509,6 +928,21 @@ How can I help you today?''',
                         width: 220,
                         height: 180,
                         fit: BoxFit.cover,
+                        cacheWidth: 720,
+                        errorBuilder:
+                            (context, error, stackTrace) => Container(
+                              width: 220,
+                              height: 180,
+                              color: Colors.grey.shade200,
+                              alignment: Alignment.center,
+                              child: const Text(
+                                'Image unavailable',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                            ),
                       ),
                     ),
                     if (message.text.isNotEmpty) const SizedBox(height: 6),
@@ -532,21 +966,17 @@ How can I help you today?''',
   }
 
   Widget _buildTypingIndicator() {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 24),
+    return const Padding(
+      padding: EdgeInsets.only(bottom: 24),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Container(
-            margin: const EdgeInsets.only(right: 12),
-            child: const Icon(
-              Icons.auto_awesome,
-              color: Color(0xFF1A73E8),
-              size: 22,
-            ),
+          Padding(
+            padding: EdgeInsets.only(right: 12),
+            child: Icon(Icons.auto_awesome, color: Color(0xFF1A73E8), size: 22),
           ),
-          const Text(
-            "Thinking...",
+          Text(
+            'Thinking...',
             style: TextStyle(
               fontSize: 14,
               fontStyle: FontStyle.italic,
@@ -557,8 +987,6 @@ How can I help you today?''',
       ),
     );
   }
-
-  Widget _buildDot(int index) => _TypingDot(index: index);
 
   Widget _buildSuggestions() {
     return Padding(
@@ -648,7 +1076,6 @@ How can I help you today?''',
       child: SafeArea(
         child: Row(
           children: [
-            // Mic button — toggles listening
             GestureDetector(
               onTap: _toggleListening,
               child: AnimatedContainer(
@@ -670,7 +1097,6 @@ How can I help you today?''',
               ),
             ),
             const SizedBox(width: 8),
-            // Camera button
             GestureDetector(
               onTap: _openCamera,
               child: Container(
@@ -687,8 +1113,24 @@ How can I help you today?''',
                 ),
               ),
             ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _openGallery,
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.secondary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.photo_library_outlined,
+                  color: AppColors.secondary,
+                  size: 20,
+                ),
+              ),
+            ),
             const SizedBox(width: 10),
-            // Text input
             Expanded(
               child: TextField(
                 controller: _controller,
@@ -719,7 +1161,6 @@ How can I help you today?''',
               ),
             ),
             const SizedBox(width: 10),
-            // Send button
             GestureDetector(
               onTap: () => _sendMessage(_controller.text),
               child: Container(
@@ -733,52 +1174,6 @@ How can I help you today?''',
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _TypingDot extends StatefulWidget {
-  final int index;
-  const _TypingDot({required this.index});
-
-  @override
-  State<_TypingDot> createState() => _TypingDotState();
-}
-
-class _TypingDotState extends State<_TypingDot>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-    );
-    Future.delayed(Duration(milliseconds: widget.index * 200), () {
-      if (mounted) _controller.repeat(reverse: true);
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween<double>(begin: 0.3, end: 1.0).animate(_controller),
-      child: Container(
-        width: 8,
-        height: 8,
-        decoration: const BoxDecoration(
-          color: AppColors.secondary,
-          shape: BoxShape.circle,
         ),
       ),
     );

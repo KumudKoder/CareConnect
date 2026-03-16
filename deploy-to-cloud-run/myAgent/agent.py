@@ -6,6 +6,9 @@ from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
 
 load_dotenv()
 
+MCP_FALLBACK_URL = "https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp"
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", MCP_FALLBACK_URL)
+
 SYSTEM_INSTRUCTION = (
     "You are CareConnect AI, a helpful and concise medical assistant. "
     "Use CareConnect MCP tools when needed to analyze prescriptions, summarize reports, check medicine cautions, and prepare reminders. "
@@ -20,7 +23,7 @@ root_agent = LlmAgent(
     tools=[
         MCPToolset(
             connection_params=StreamableHTTPConnectionParams(
-                url=os.getenv("MCP_SERVER_URL", "http://localhost:8080/mcp")
+                url=MCP_SERVER_URL
             )
         )
     ],

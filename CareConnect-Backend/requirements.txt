@@ -3,4 +3,5 @@ uvicorn
 python-dotenv
 google-adk
 google-cloud-aiplatform
-google-genaifirebase-admin==6.6.0
+google-genai
+firebase-admin==6.6.0

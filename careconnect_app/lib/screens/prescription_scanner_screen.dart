@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 class AppColors {
   static const Color primary = Color(0xFF00897B);
@@ -16,17 +21,23 @@ class AppColors {
 
 class ScannedMedicine {
   final String name;
+  final String genericName;
+  final String brandName;
   final String dosage;
   final String frequency;
   final String duration;
+  final double confidence;
   bool isSelected;
   String? interactionWarning;
 
   ScannedMedicine({
     required this.name,
+    this.genericName = '',
+    this.brandName = '',
     required this.dosage,
     required this.frequency,
     this.duration = '',
+    this.confidence = 0,
     this.isSelected = true,
     this.interactionWarning,
   });
@@ -36,13 +47,21 @@ class PrescriptionScannerScreen extends StatefulWidget {
   const PrescriptionScannerScreen({super.key});
 
   @override
-  State<PrescriptionScannerScreen> createState() => _PrescriptionScannerScreenState();
+  State<PrescriptionScannerScreen> createState() =>
+      _PrescriptionScannerScreenState();
 }
 
 class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
+  static const String _backendBase = String.fromEnvironment(
+    'CARECONNECT_WS_BASE',
+    defaultValue: 'ws://192.168.29.62:8081',
+  );
+
   File? _capturedImage;
   bool _isProcessing = false;
+  bool _isSaving = false;
   bool _hasResults = false;
+  String _aiRawResponse = '';
   final ImagePicker _picker = ImagePicker();
 
   // Simulated scanned medicines
@@ -64,58 +83,218 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
           _capturedImage = File(image.path);
           _isProcessing = true;
           _hasResults = false;
+          _aiRawResponse = '';
         });
         await _processImage();
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: AppColors.error),
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppColors.error,
+          ),
         );
       }
     }
   }
 
   Future<void> _processImage() async {
-    // Simulate AI processing delay
-    await Future.delayed(const Duration(seconds: 2));
+    final image = _capturedImage;
+    if (image == null) {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+      return;
+    }
 
-    // In production, you'd send _capturedImage to Gemini with visionPrompt:
-    // final model = GenerativeModel(model: 'gemini-1.5-flash', apiKey: apiKey);
-    // final imageBytes = await _capturedImage!.readAsBytes();
-    // final content = Content.multi([
-    //   TextPart(visionPrompt),
-    //   DataPart('image/jpeg', imageBytes),
-    // ]);
-    // final response = await model.generateContent([content]);
+    try {
+      final aiResponse = await _analyzePrescriptionWithAI(image);
+      final medicines = _parseMedicinesFromResponse(aiResponse);
 
-    // Mock results for demonstration
-    setState(() {
-      _scannedMedicines.clear();
-      _scannedMedicines.addAll([
-        ScannedMedicine(
-          name: 'Paracetamol',
-          dosage: '500mg tablet',
-          frequency: 'Three times daily (after meals)',
-          duration: '5 days',
+      if (!mounted) return;
+      setState(() {
+        _scannedMedicines
+          ..clear()
+          ..addAll(medicines);
+        _aiRawResponse = aiResponse;
+        _isProcessing = false;
+        _hasResults = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _scannedMedicines.clear();
+        _aiRawResponse =
+            'Sorry, I could not analyze this prescription right now. Please try again.';
+        _isProcessing = false;
+        _hasResults = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('AI scan failed: $e'),
+          backgroundColor: AppColors.error,
         ),
-        ScannedMedicine(
-          name: 'Amoxicillin',
-          dosage: '250mg capsule',
-          frequency: 'Twice daily (morning & night)',
-          duration: '7 days',
-          interactionWarning: 'May reduce effectiveness of oral contraceptives',
-        ),
-        ScannedMedicine(
-          name: 'Cetirizine',
-          dosage: '10mg tablet',
-          frequency: 'Once daily (at bedtime)',
-          duration: '10 days',
-        ),
-      ]);
-      _isProcessing = false;
-      _hasResults = true;
+      );
+    }
+  }
+
+  Future<String> _analyzePrescriptionWithAI(File imageFile) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      throw Exception('Please sign in before scanning prescription.');
+    }
+
+    final token = await user.getIdToken(true);
+    final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+
+    final baseUri = Uri.parse(_backendBase);
+    final wsScheme =
+        baseUri.scheme == 'https'
+            ? 'wss'
+            : (baseUri.scheme == 'http' ? 'ws' : baseUri.scheme);
+    final wsUrl = Uri(
+      scheme: wsScheme,
+      host: baseUri.host,
+      port: baseUri.hasPort ? baseUri.port : null,
+      path: '/ws/${user.uid}/$sessionId',
+      queryParameters: {'token': token},
+    );
+
+    final bytes = await imageFile.readAsBytes();
+    final ext = imageFile.path.toLowerCase();
+    final mimeType = ext.endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+    final channel = WebSocketChannel.connect(wsUrl);
+    final completer = Completer<String>();
+    StreamSubscription? subscription;
+    Timer? idleTimer;
+    String transcript = '';
+
+    void completeNow() {
+      if (!completer.isCompleted) {
+        completer.complete(transcript.trim());
+      }
+    }
+
+    subscription = channel.stream.listen(
+      (data) {
+        try {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          String chunk = '';
+
+          if (message.containsKey('outputTranscription') &&
+              message['outputTranscription'] is Map<String, dynamic>) {
+            final out = message['outputTranscription'] as Map<String, dynamic>;
+            final text = out['text'];
+            if (text is String) {
+              chunk = text;
+            }
+          } else if (message['type'] == 'text' && message['text'] is String) {
+            chunk = message['text'] as String;
+          }
+
+          if (chunk.isNotEmpty) {
+            if (chunk == transcript) {
+              return;
+            }
+            if (chunk.startsWith(transcript)) {
+              transcript = chunk;
+            } else if (!transcript.startsWith(chunk)) {
+              transcript += chunk;
+            }
+
+            idleTimer?.cancel();
+            idleTimer = Timer(const Duration(milliseconds: 1400), completeNow);
+          }
+        } catch (_) {
+          // Ignore malformed frames and continue collecting valid output.
+        }
+      },
+      onError: (_) => completeNow(),
+      onDone: completeNow,
+      cancelOnError: false,
+    );
+
+    final prompt = jsonEncode({
+      'type': 'text',
+      'text':
+          'You are analyzing a medicine prescription image. Identify medicines and respond in valid JSON only with this shape: '
+          '{"medicines":[{"name":"...","genericName":"...","brandName":"...","dosage":"...","frequency":"...","duration":"...","confidence":0.0,"interactionWarning":"optional"}],"summary":"..."}. '
+          'Rules: dosage, frequency, and duration are mandatory keys for each medicine; if unknown, set value to "Unknown". '
+          'confidence must be between 0 and 1. Return only JSON.',
     });
+
+    final imagePayload = jsonEncode({
+      'type': 'image',
+      'data': base64Encode(bytes),
+      'mimeType': mimeType,
+    });
+
+    channel.sink.add(prompt);
+    channel.sink.add(imagePayload);
+
+    Timer(const Duration(seconds: 12), completeNow);
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 15),
+      onTimeout: () => transcript.trim(),
+    );
+
+    idleTimer?.cancel();
+    await subscription.cancel();
+    await channel.sink.close();
+
+    if (result.isEmpty) {
+      throw Exception('No response from AI backend');
+    }
+    return result;
+  }
+
+  List<ScannedMedicine> _parseMedicinesFromResponse(String rawText) {
+    final jsonText = _extractJsonObject(rawText);
+    if (jsonText == null) return [];
+
+    try {
+      final decoded = jsonDecode(jsonText);
+      if (decoded is! Map<String, dynamic>) return [];
+
+      final medicines = decoded['medicines'];
+      if (medicines is! List) return [];
+
+      return medicines
+          .whereType<Map<String, dynamic>>()
+          .map(
+            (m) => ScannedMedicine(
+              name: (m['name'] ?? 'Unknown').toString(),
+              genericName: (m['genericName'] ?? m['generic'] ?? '').toString(),
+              brandName: (m['brandName'] ?? m['brand'] ?? '').toString(),
+              dosage: (m['dosage'] ?? 'Unknown').toString(),
+              frequency: (m['frequency'] ?? 'Unknown').toString(),
+              duration: (m['duration'] ?? 'Unknown').toString(),
+              confidence:
+                  (m['confidence'] is num)
+                      ? (m['confidence'] as num).toDouble().clamp(0.0, 1.0)
+                      : 0.0,
+              interactionWarning: m['interactionWarning']?.toString(),
+            ),
+          )
+          .where((m) => m.name.trim().isNotEmpty)
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  String? _extractJsonObject(String rawText) {
+    final cleaned =
+        rawText.replaceAll('```json', '').replaceAll('```', '').trim();
+    final start = cleaned.indexOf('{');
+    final end = cleaned.lastIndexOf('}');
+    if (start == -1 || end == -1 || end <= start) {
+      return null;
+    }
+    return cleaned.substring(start, end + 1);
   }
 
   @override
@@ -123,7 +302,14 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Scan Prescription', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+        title: const Text(
+          'Scan Prescription',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textPrimary,
+          ),
+        ),
         backgroundColor: Colors.white,
         elevation: 1,
       ),
@@ -164,25 +350,46 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(16),
-            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 8)],
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 8,
+              ),
+            ],
           ),
           child: Column(
             children: [
               Container(
-                width: 80, height: 80,
+                width: 80,
+                height: 80,
                 decoration: BoxDecoration(
                   color: AppColors.primary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: const Icon(Icons.document_scanner, color: AppColors.primary, size: 40),
+                child: const Icon(
+                  Icons.document_scanner,
+                  color: AppColors.primary,
+                  size: 40,
+                ),
               ),
               const SizedBox(height: 16),
-              const Text('Scan Your Prescription', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+              const Text(
+                'Scan Your Prescription',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
               const SizedBox(height: 8),
               const Text(
                 'Take a clear photo of your prescription.\nOur AI will extract medicine details automatically.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: AppColors.textSecondary, height: 1.5),
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textSecondary,
+                  height: 1.5,
+                ),
               ),
             ],
           ),
@@ -220,17 +427,34 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
           decoration: BoxDecoration(
             color: AppColors.secondary.withValues(alpha: 0.05),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.secondary.withValues(alpha: 0.2)),
+            border: Border.all(
+              color: AppColors.secondary.withValues(alpha: 0.2),
+            ),
           ),
           child: const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('📸 Tips for best results:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              Text(
+                '📸 Tips for best results:',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
               SizedBox(height: 8),
-              Text('• Place prescription on a flat surface', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-              Text('• Ensure good lighting', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-              Text('• Capture the full prescription', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-              Text('• Keep the camera steady', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              Text(
+                '• Place prescription on a flat surface',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+              Text(
+                '• Ensure good lighting',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+              Text(
+                '• Capture the full prescription',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+              Text(
+                '• Keep the camera steady',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
             ],
           ),
         ),
@@ -238,7 +462,12 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
     );
   }
 
-  Widget _buildOptionButton({required IconData icon, required String label, required Color color, required VoidCallback onTap}) {
+  Widget _buildOptionButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -246,13 +475,26 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
         decoration: BoxDecoration(
           color: color,
           borderRadius: BorderRadius.circular(12),
-          boxShadow: [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 8, offset: const Offset(0, 4))],
+          boxShadow: [
+            BoxShadow(
+              color: color.withValues(alpha: 0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
         ),
         child: Column(
           children: [
             Icon(icon, color: Colors.white, size: 32),
             const SizedBox(height: 8),
-            Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+            ),
           ],
         ),
       ),
@@ -272,9 +514,15 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
         children: [
           const CircularProgressIndicator(color: AppColors.secondary),
           const SizedBox(height: 20),
-          const Text('🤖 AI is analyzing your prescription...', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+          const Text(
+            '🤖 AI is analyzing your prescription...',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
           const SizedBox(height: 8),
-          Text('Extracting medicine names, dosages & frequencies', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          Text(
+            'Extracting medicine names, dosages & frequencies',
+            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          ),
         ],
       ),
     );
@@ -287,13 +535,24 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
       decoration: BoxDecoration(
         color: Colors.grey[200],
         borderRadius: BorderRadius.circular(12),
-        image: _capturedImage != null
-            ? DecorationImage(image: FileImage(_capturedImage!), fit: BoxFit.cover)
-            : null,
+        image:
+            _capturedImage != null
+                ? DecorationImage(
+                  image: FileImage(_capturedImage!),
+                  fit: BoxFit.cover,
+                )
+                : null,
       ),
-      child: _capturedImage == null
-          ? const Center(child: Icon(Icons.image, size: 48, color: AppColors.textSecondary))
-          : null,
+      child:
+          _capturedImage == null
+              ? const Center(
+                child: Icon(
+                  Icons.image,
+                  size: 48,
+                  color: AppColors.textSecondary,
+                ),
+              )
+              : null,
     );
   }
 
@@ -313,7 +572,14 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
             children: [
               Icon(Icons.auto_awesome, color: AppColors.secondary, size: 18),
               SizedBox(width: 8),
-              Text('Gemini Vision Prompt Used', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.secondary)),
+              Text(
+                'Gemini Vision Prompt Used',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.secondary,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -325,7 +591,11 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
             ),
             child: const Text(
               '"Extract the Drug Name, Dosage, and Frequency from this prescription image."',
-              style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: AppColors.textSecondary),
+              style: TextStyle(
+                fontSize: 12,
+                fontStyle: FontStyle.italic,
+                color: AppColors.textSecondary,
+              ),
             ),
           ),
         ],
@@ -334,27 +604,83 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
   }
 
   Widget _buildResultsSection() {
-    int interactions = _scannedMedicines.where((m) => m.interactionWarning != null).length;
+    int interactions =
+        _scannedMedicines.where((m) => m.interactionWarning != null).length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_aiRawResponse.isNotEmpty) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: AppColors.secondary.withValues(alpha: 0.2),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '🤖 AI analysis',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.secondary,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _aiRawResponse,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('Found ${_scannedMedicines.length} medicines', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(
+              'Found ${_scannedMedicines.length} medicines',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
             if (interactions > 0)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.warning.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Text('⚠️ $interactions warning${interactions > 1 ? 's' : ''}', style: const TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.w600)),
+                child: Text(
+                  '⚠️ $interactions warning${interactions > 1 ? 's' : ''}',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.warning,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
           ],
         ),
         const SizedBox(height: 12),
-        ..._scannedMedicines.map((med) => _buildMedicineResult(med)),
+        if (_scannedMedicines.isEmpty)
+          const Text(
+            'No structured medicines could be extracted. Please try a clearer image.',
+            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          )
+        else
+          ..._scannedMedicines.map((med) => _buildMedicineResult(med)),
       ],
     );
   }
@@ -366,8 +692,13 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: med.interactionWarning != null ? Border.all(color: AppColors.warning.withValues(alpha: 0.5)) : null,
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 4)],
+        border:
+            med.interactionWarning != null
+                ? Border.all(color: AppColors.warning.withValues(alpha: 0.5))
+                : null,
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 4),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -380,7 +711,13 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
                 onChanged: (v) => setState(() => med.isSelected = v ?? true),
               ),
               Expanded(
-                child: Text('💊 ${med.name}', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                child: Text(
+                  '💊 ${med.name}',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
@@ -389,9 +726,20 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (med.brandName.trim().isNotEmpty)
+                  _buildDetailRow('Brand', med.brandName),
+                if (med.genericName.trim().isNotEmpty)
+                  _buildDetailRow('Generic', med.genericName),
                 _buildDetailRow('Dosage', med.dosage),
                 _buildDetailRow('Frequency', med.frequency),
-                if (med.duration.isNotEmpty) _buildDetailRow('Duration', med.duration),
+                _buildDetailRow(
+                  'Duration',
+                  med.duration.isEmpty ? 'Unknown' : med.duration,
+                ),
+                _buildDetailRow(
+                  'Confidence',
+                  '${(med.confidence * 100).toStringAsFixed(0)}%',
+                ),
                 if (med.interactionWarning != null) ...[
                   const SizedBox(height: 8),
                   Container(
@@ -402,9 +750,21 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.warning_amber, color: AppColors.warning, size: 16),
+                        const Icon(
+                          Icons.warning_amber,
+                          color: AppColors.warning,
+                          size: 16,
+                        ),
                         const SizedBox(width: 6),
-                        Expanded(child: Text(med.interactionWarning!, style: const TextStyle(fontSize: 11, color: AppColors.warning))),
+                        Expanded(
+                          child: Text(
+                            med.interactionWarning!,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppColors.warning,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -423,8 +783,22 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 80, child: Text('$label:', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary))),
-          Expanded(child: Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
+          SizedBox(
+            width: 80,
+            child: Text(
+              '$label:',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+            ),
+          ),
         ],
       ),
     );
@@ -437,15 +811,19 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('✅ $selected medicine(s) added to your profile!'), backgroundColor: AppColors.success),
-              );
-              Future.delayed(const Duration(seconds: 1), () { if (mounted) Navigator.pop(context); });
-            },
+            onPressed: _isSaving ? null : _addSelectedMedicinesToProfile,
             icon: const Icon(Icons.check_circle, color: Colors.white),
-            label: Text('Add $selected Medicine(s) to Profile', style: const TextStyle(color: Colors.white)),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+            label: Text(
+              _isSaving ? 'Saving...' : 'Add $selected Medicine(s) to Profile',
+              style: const TextStyle(color: Colors.white),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 10),
@@ -453,8 +831,19 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: () => setState(() { _hasResults = false; _capturedImage = null; }),
-                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                onPressed:
+                    () => setState(() {
+                      _hasResults = false;
+                      _capturedImage = null;
+                      _scannedMedicines.clear();
+                      _aiRawResponse = '';
+                    }),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
                 child: const Text('Scan Again'),
               ),
             ),
@@ -462,7 +851,13 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
             Expanded(
               child: OutlinedButton(
                 onPressed: () => Navigator.pop(context),
-                style: OutlinedButton.styleFrom(foregroundColor: AppColors.error, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
                 child: const Text('Discard'),
               ),
             ),
@@ -470,5 +865,77 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
         ),
       ],
     );
+  }
+
+  Future<void> _addSelectedMedicinesToProfile() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Please sign in first.')));
+      }
+      return;
+    }
+
+    final selectedMeds = _scannedMedicines.where((m) => m.isSelected).toList();
+    if (selectedMeds.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Select at least one medicine to add.')),
+        );
+      }
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final medsCollection = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('medicines');
+
+      final batch = FirebaseFirestore.instance.batch();
+      for (final med in selectedMeds) {
+        final docRef = medsCollection.doc();
+        batch.set(docRef, {
+          'name': med.name,
+          'genericName': med.genericName,
+          'brandName': med.brandName,
+          'dosage': med.dosage,
+          'frequency': med.frequency,
+          'duration': med.duration.isEmpty ? 'Unknown' : med.duration,
+          'confidence': med.confidence,
+          'interactionWarning': med.interactionWarning,
+          'source': 'prescription_scan',
+          'addedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '✅ ${selectedMeds.length} medicine(s) added to your profile!',
+          ),
+          backgroundColor: AppColors.success,
+        ),
+      );
+      Future.delayed(const Duration(seconds: 1), () {
+        if (mounted) Navigator.pop(context);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not save medicines: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
   }
 }
