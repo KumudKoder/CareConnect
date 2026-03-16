@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "625372238637",
+    "project_id": "codeversity-k70le",
+    "storage_bucket": "codeversity-k70le.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:625372238637:android:6c03bb37908c7ffdc0b9a4",
+        "android_client_info": {
+          "package_name": "com.example.careconnect_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCkRXmYMBtskBHCfgDW7m1lzepYCRiPmpk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:625372238637:android:5e6dd53e0078f984c0b9a4",
+        "android_client_info": {
+          "package_name": "com.mycompany.CounterApp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCkRXmYMBtskBHCfgDW7m1lzepYCRiPmpk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

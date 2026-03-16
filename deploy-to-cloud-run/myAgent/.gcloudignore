@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!agent.py
+!a2a_main.py
+!__init__.py

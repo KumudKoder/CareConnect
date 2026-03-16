@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
@@ -57,7 +58,7 @@ class _AIChatScreenState extends State<AIChatScreen>
 
   // WebSocket
   WebSocketChannel? _channel;
-  final String _userId = "user_123"; // TODO: Get from auth
+  late String _userId;
   final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
   final List<String> _suggestedQuestions = [
@@ -73,6 +74,8 @@ class _AIChatScreenState extends State<AIChatScreen>
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
+    final u = FirebaseAuth.instance.currentUser;
+    if (u != null) { _userId = u.uid; }
     _connectWebSocket();
     _messages.add(
       ChatMessage(
@@ -90,10 +93,11 @@ How can I help you today?''',
     );
   }
 
-  void _connectWebSocket() {
+  Future<void> _connectWebSocket() async {
     // Replace with your actual backend IP if running on device/emulator
     // 192.168.29.62 is the host PC IP for physical device testing
-    final wsUrl = Uri.parse('ws://192.168.29.62:8081/ws/$_userId/$_sessionId');
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken() ?? '';
+    final wsUrl = Uri.parse('ws://192.168.29.62:8081/ws/$_userId/$_sessionId?token=' + token);
     try {
       _channel = WebSocketChannel.connect(wsUrl);
       _channel?.stream.listen(

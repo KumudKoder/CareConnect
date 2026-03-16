@@ -6,17 +6,9 @@ import logging
 import warnings
 from pathlib import Path
 
-# Load .env FIRST so GOOGLE_API_KEY is available before any google.adk import
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
-from firebase_admin import auth, initialize_app
-
-# Initialize Firebase Admin (ADC on Cloud Run service account or local GOOGLE_APPLICATION_CREDENTIALS)
-try:
-    initialize_app()
-except Exception as _init_err:
-    logging.getLogger(__name__).warning(f'Firebase Admin init issue: {_init_err}')
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from google.adk.agents import Agent
 from google.adk.agents.live_request_queue import LiveRequestQueue
@@ -26,16 +18,9 @@ from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.genai import types
 from google.adk.tools import google_search
 
-# Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-# Suppress pydantic serialization warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. APPLICATION & AGENT INITIALIZATION
-# ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI()
 APP_NAME = "careconnect"
@@ -44,7 +29,6 @@ SKILLS_ROOT = WORKSPACE_ROOT / ".gemini" / "skills"
 
 
 def _build_skill_prompt_bundle(skills_root: Path) -> str:
-    """Load all skill SKILL.md files into one prompt bundle for runtime guidance."""
     if not skills_root.exists():
         logger.warning(f"Skills folder not found: {skills_root}")
         return ""
@@ -90,10 +74,8 @@ CAPABILITIES_RESPONSE_POLICY = (
 
 SKILL_BUNDLE_PROMPT = _build_skill_prompt_bundle(SKILLS_ROOT)
 
-# CareConnect Agent — the AI "brain"
 agent = Agent(
     name="careconnect_agent",
-    # Use a bidi-compatible model
     model="gemini-2.5-flash-native-audio-preview-12-2025",
     instruction=(
         BASE_AGENT_INSTRUCTION
@@ -104,15 +86,9 @@ agent = Agent(
     tools=[google_search],
 )
 
-# Session service (in-memory for dev; swap for VertexAiSessionService in prod)
 session_service = InMemorySessionService()
-
-# Runner wires the agent + session together
 runner = Runner(app_name=APP_NAME, agent=agent, session_service=session_service)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. WEBSOCKET ENDPOINT  (pattern from google/adk-samples bidi-demo)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/{user_id}/{session_id}")
 async def websocket_endpoint(
@@ -120,30 +96,13 @@ async def websocket_endpoint(
     user_id: str,
     session_id: str,
 ) -> None:
-    """Bidirectional streaming WebSocket between Flutter app and Gemini."""
-
-        # Auth: Verify Firebase ID token
-    token = websocket.query_params.get("token") if hasattr(websocket, "query_params") else None
-    try:
-        decoded = auth.verify_id_token(token) if token else None
-        uid = decoded.get("uid") if decoded else None
-        if not uid:
-            await websocket.close(code=4401)
-            return
-        user_id = uid
-    except Exception as e:
-        logger.warning(f"Auth failed: {e}")
-        await websocket.close(code=4401)
-        return
     await websocket.accept()
     logger.debug(f"WS accepted: user={user_id} session={session_id}")
 
-    # ── Detect model type and set response modality ───────────────────────────
     model_name: str = agent.model
     is_native_audio = "native-audio" in model_name.lower()
 
     if is_native_audio:
-        # Native audio models: AUDIO response + transcription
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
             response_modalities=["AUDIO"],
@@ -151,7 +110,6 @@ async def websocket_endpoint(
             output_audio_transcription=types.AudioTranscriptionConfig(),
         )
     else:
-        # Half-cascade models (flash-exp, etc.): TEXT is faster & more reliable
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
             response_modalities=["TEXT"],
@@ -159,7 +117,6 @@ async def websocket_endpoint(
 
     logger.debug(f"RunConfig: modalities={'AUDIO' if is_native_audio else 'TEXT'}")
 
-    # ── Session: get existing or create new ───────────────────────────────────
     session = await session_service.get_session(
         app_name=APP_NAME, user_id=user_id, session_id=session_id
     )
@@ -167,29 +124,19 @@ async def websocket_endpoint(
         await session_service.create_session(
             app_name=APP_NAME, user_id=user_id, session_id=session_id
         )
-        logger.debug("Created new session")
-    else:
-        logger.debug("Resumed existing session")
 
-    # ── Live request queue (message bus between upstream and Gemini) ──────────
     live_request_queue = LiveRequestQueue()
 
-    # ── PHASE 3: Concurrent bidirectional tasks ───────────────────────────────
-
     async def upstream_task() -> None:
-        """Flutter → Backend → Gemini"""
         logger.debug("upstream_task started")
         while True:
             message = await websocket.receive()
 
-            # Binary frames = raw PCM audio
             if "bytes" in message:
                 audio_data = message["bytes"]
                 audio_blob = types.Blob(mime_type="audio/pcm;rate=16000", data=audio_data)
                 live_request_queue.send_realtime(audio_blob)
-                logger.debug(f"Audio chunk sent: {len(audio_data)} bytes")
 
-            # Text frames = JSON (type: text | image)
             elif "text" in message:
                 json_msg = json.loads(message["text"])
                 msg_type = json_msg.get("type")
@@ -200,17 +147,14 @@ async def websocket_endpoint(
                         parts=[types.Part(text=json_msg["text"])],
                     )
                     live_request_queue.send_content(content)
-                    logger.debug(f"Text sent: {json_msg['text'][:80]}")
 
                 elif msg_type == "image":
                     image_bytes = base64.b64decode(json_msg["data"])
                     mime = json_msg.get("mimeType", "image/jpeg")
                     image_blob = types.Blob(mime_type=mime, data=image_bytes)
                     live_request_queue.send_realtime(image_blob)
-                    logger.debug(f"Image sent: {len(image_bytes)} bytes ({mime})")
 
     async def downstream_task() -> None:
-        """Gemini → Backend → Flutter"""
         logger.debug("downstream_task started")
         async for event in runner.run_live(
             user_id=user_id,
@@ -219,10 +163,8 @@ async def websocket_endpoint(
             run_config=run_config,
         ):
             event_json = event.model_dump_json(exclude_none=True, by_alias=True)
-            logger.debug(f"[EVENT] {event_json[:200]}")
             await websocket.send_text(event_json)
 
-    # ── Run both tasks concurrently ───────────────────────────────────────────
     try:
         await asyncio.gather(upstream_task(), downstream_task())
     except WebSocketDisconnect:
@@ -231,12 +173,7 @@ async def websocket_endpoint(
         logger.error(f"Streaming error: {e}", exc_info=True)
     finally:
         live_request_queue.close()
-        logger.debug("Queue closed, session ended")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. HEALTH CHECK (for Cloud Run or any container)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
