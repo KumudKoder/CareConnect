@@ -9,6 +9,7 @@ It also lists the **required APIs, IAM access, runtime access, and direct consol
 
 > [!NOTE]
 > To avoid exposing environment-specific identifiers, this runbook uses placeholders:
+>
 > - Cloud Run URL pattern: `https://<service>-<project-number>.<region>.run.app`
 > - Project ID: `<project-id>`
 > - Project Number: `<project-number>`
