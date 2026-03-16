@@ -1,0 +1,20 @@
+title = "CareConnect Gitleaks Config"
+
+[allowlist]
+description = "Ignore binary assets and known scanner definition files that can cause false positives"
+paths = [
+  '''(?i)\.png$''',
+  '''(?i)\.jpg$''',
+  '''(?i)\.jpeg$''',
+  '''(?i)\.gif$''',
+  '''(?i)\.pdf$''',
+  '''(?i)\.apk$''',
+  '''(?i)\.aab$''',
+  '''^\.githooks/secret_scan\.py$'''
+]
+
+regexes = [
+  '''YOUR_GOOGLE_API_KEY''',
+  '''<your-local-ip>''',
+  '''<path-to-repo>'''
+]
