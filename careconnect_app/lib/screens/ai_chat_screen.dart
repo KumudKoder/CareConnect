@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -85,6 +86,45 @@ class ChatSession {
   );
 }
 
+class MeetingNote {
+  final String id;
+  final String title;
+  final String rawTranscript;
+  final String summary;
+  final List<String> redFlags;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+  final String status;
+
+  MeetingNote({
+    required this.id,
+    required this.title,
+    required this.rawTranscript,
+    required this.summary,
+    required this.redFlags,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.status,
+  });
+
+  static MeetingNote fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data() ?? {};
+    return MeetingNote(
+      id: doc.id,
+      title: (d['title'] ?? 'Meeting Note').toString(),
+      rawTranscript: (d['rawTranscript'] ?? '').toString(),
+      summary: (d['summary'] ?? '').toString(),
+      redFlags:
+          (d['redFlags'] as List<dynamic>? ?? [])
+              .map((e) => e.toString())
+              .toList(),
+      createdAt: (d['createdAt'] as Timestamp?)?.toDate(),
+      updatedAt: (d['updatedAt'] as Timestamp?)?.toDate(),
+      status: (d['status'] ?? 'active').toString(),
+    );
+  }
+}
+
 class ChatStorage {
   static const String _sessionsKey = 'cc_chat_sessions_v1';
 
@@ -110,8 +150,10 @@ class ChatStorage {
   static Future<void> save(List<ChatSession> sessions) async {
     final prefs = await SharedPreferences.getInstance();
     final limited = sessions.length > 30 ? sessions.sublist(0, 30) : sessions;
-    final raw = jsonEncode(limited.map((s) => s.toJson()).toList());
-    await prefs.setString(_sessionsKey, raw);
+    await prefs.setString(
+      _sessionsKey,
+      jsonEncode(limited.map((s) => s.toJson()).toList()),
+    );
   }
 
   static Future<void> deleteSession(String sessionId) async {
@@ -132,7 +174,7 @@ class _AIChatScreenState extends State<AIChatScreen>
     with TickerProviderStateMixin {
   static const String _backendBase = String.fromEnvironment(
     'CARECONNECT_WS_BASE',
-    defaultValue: 'ws://192.168.29.62:8081',
+    defaultValue: '',
   );
 
   final TextEditingController _controller = TextEditingController();
@@ -156,6 +198,18 @@ class _AIChatScreenState extends State<AIChatScreen>
   StreamSubscription? _channelSubscription;
   bool _disposed = false;
   String _userId = 'guest';
+  Timer? _responseTimeoutTimer;
+
+  // Meeting notes / allergy safety
+  bool _isMeetingActive = false;
+  String? _activeMeetingNoteId;
+  String _meetingTranscriptBuffer = '';
+  Timer? _aiNotePersistDebounce;
+  String _lastPersistedAiLine = '';
+  bool _isSummarizingNote = false;
+
+  List<String> _allergies = [];
+  Set<String> _knownMedicineTerms = {};
 
   final List<String> _suggestedQuestions = [
     'Why is my BP high?',
@@ -164,6 +218,7 @@ class _AIChatScreenState extends State<AIChatScreen>
     'When should I exercise?',
     'What foods reduce BP?',
     'Can I skip my evening dose?',
+    'What doctor told in my last meeting?',
   ];
 
   @override
@@ -173,7 +228,9 @@ class _AIChatScreenState extends State<AIChatScreen>
     final u = FirebaseAuth.instance.currentUser;
     if (u != null) _userId = u.uid;
     _currentSessionId = DateTime.now().millisecondsSinceEpoch.toString();
+
     _loadSessions().then((_) => _startNewSession());
+    _loadPatientContext();
   }
 
   Future<void> _loadSessions() async {
@@ -181,8 +238,65 @@ class _AIChatScreenState extends State<AIChatScreen>
     if (mounted) setState(() => _sessions = loaded);
   }
 
+  Future<void> _loadPatientContext() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final userDoc =
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get();
+      final data = userDoc.data() ?? {};
+
+      final parsedAllergies = <String>[];
+      final allergiesRaw = data['allergies'];
+      if (allergiesRaw is String) {
+        parsedAllergies.addAll(
+          allergiesRaw
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty),
+        );
+      } else if (allergiesRaw is List) {
+        parsedAllergies.addAll(
+          allergiesRaw
+              .map((e) => e.toString().trim())
+              .where((e) => e.isNotEmpty),
+        );
+      }
+
+      final medsSnap =
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .collection('medicines')
+              .get();
+
+      final terms = <String>{};
+      for (final doc in medsSnap.docs) {
+        final m = doc.data();
+        for (final key in ['name', 'genericName', 'brandName']) {
+          final val = (m[key] ?? '').toString().trim().toLowerCase();
+          if (val.isNotEmpty) terms.add(val);
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _allergies = parsedAllergies;
+          _knownMedicineTerms = terms;
+        });
+      }
+    } catch (_) {
+      // non-fatal
+    }
+  }
+
   void _startNewSession({bool temporary = false}) {
     _saveCurrentSession();
+
     final newId = DateTime.now().millisecondsSinceEpoch.toString();
     final u = FirebaseAuth.instance.currentUser;
     final userName = u?.displayName ?? u?.email?.split('@').first ?? 'there';
@@ -199,7 +313,7 @@ class _AIChatScreenState extends State<AIChatScreen>
           text:
               temporary
                   ? '⚡ Temporary chat — this conversation will be cleared when you close it.\n\nHello $userName! How can I help you today?'
-                  : 'Hello $userName! 👋 I\'m your AI health assistant.\n\nI can help you with:\n• Understanding your health data\n• Medicine information & interactions\n• Exercise and diet recommendations\n• Scheduling appointments\n\nHow can I help you today?',
+                  : 'Hello $userName! 👋 I\'m your AI health assistant.\n\nI can help you with:\n• Understanding your health data\n• Medicine information & interactions\n• Exercise and diet recommendations\n• Doctor meeting notes & summaries\n\nHow can I help you today?',
           isUser: false,
         ),
       );
@@ -274,6 +388,19 @@ class _AIChatScreenState extends State<AIChatScreen>
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    if (_backendBase.trim().isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'AI backend is not configured in this build. Rebuild with CARECONNECT_WS_BASE pointing to a reachable backend.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
     _userId = user.uid;
     final token = await user.getIdToken(true);
 
@@ -296,18 +423,30 @@ class _AIChatScreenState extends State<AIChatScreen>
       _channelSubscription = _channel?.stream.listen(
         _handleBackendMessage,
         onError: (error) {
+          _cancelResponseTimeout();
           if (!_disposed && mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('Connection error: $error')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Connection error: $error. If this APK was shared, it may still be pointing to a local laptop backend.',
+                ),
+              ),
+            );
           }
         },
-        onDone: () => _channel = null,
+        onDone: () {
+          _cancelResponseTimeout();
+          _channel = null;
+        },
       );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not connect to backend: $e')),
+          SnackBar(
+            content: Text(
+              'Could not connect to backend: $e. Shared APKs need a public backend, not a private 192.168.x.x address.',
+            ),
+          ),
         );
       }
     }
@@ -316,6 +455,8 @@ class _AIChatScreenState extends State<AIChatScreen>
   void _handleBackendMessage(dynamic data) {
     if (!mounted) return;
 
+    _cancelResponseTimeout();
+
     try {
       final message = jsonDecode(data as String) as Map<String, dynamic>;
       String newText = '';
@@ -323,9 +464,7 @@ class _AIChatScreenState extends State<AIChatScreen>
       if (message.containsKey('outputTranscription') &&
           message['outputTranscription'] != null) {
         final t = message['outputTranscription'];
-        if (t is Map && t['text'] is String) {
-          newText = t['text'] as String;
-        }
+        if (t is Map && t['text'] is String) newText = t['text'] as String;
       } else if (message['type'] == 'text' && message['text'] is String) {
         newText = message['text'] as String;
       }
@@ -342,9 +481,7 @@ class _AIChatScreenState extends State<AIChatScreen>
             _aiTranscriptSoFar = '';
           }
 
-          if (newText == _aiTranscriptSoFar) {
-            return;
-          }
+          if (newText == _aiTranscriptSoFar) return;
 
           if (newText.startsWith(_aiTranscriptSoFar)) {
             _aiTranscriptSoFar = newText;
@@ -363,24 +500,65 @@ class _AIChatScreenState extends State<AIChatScreen>
           );
         });
 
+        _scheduleAIMeetingPersist();
         _scrollToBottom();
         if (!_isTemporary) _saveCurrentSession();
       }
     } catch (_) {}
   }
 
-  void _sendMessage(String text) {
+  void _scheduleAIMeetingPersist() {
+    _aiNotePersistDebounce?.cancel();
+    _aiNotePersistDebounce = Timer(const Duration(milliseconds: 1200), () {
+      final text = _aiTranscriptSoFar.trim();
+      if (text.isEmpty || text == _lastPersistedAiLine) return;
+      _lastPersistedAiLine = text;
+      _appendMeetingLine('Doctor/AI', text);
+    });
+  }
+
+  Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty) return;
 
+    final trimmed = text.trim();
+
+    // Smart local retrieval from latest cloud notes.
+    final lower = trimmed.toLowerCase();
+    final asksMeetingRecall =
+        lower.contains('what doctor told') ||
+        lower.contains('doctor said') ||
+        lower.contains('last meeting') ||
+        lower.contains('meeting notes');
+
     setState(() {
-      _messages.add(ChatMessage(text: text.trim(), isUser: true));
+      _messages.add(ChatMessage(text: trimmed, isUser: true));
+    });
+    _appendMeetingLine('Patient', trimmed);
+
+    if (asksMeetingRecall) {
+      final recall = await _answerFromLatestMeetingNote();
+      if (!mounted) return;
+      setState(() {
+        _messages.add(ChatMessage(text: recall, isUser: false));
+      });
+      _scrollToBottom();
+      _controller.clear();
+      if (!_isTemporary) _saveCurrentSession();
+      _appendMeetingLine('Doctor/AI', recall);
+      return;
+    }
+
+    setState(() {
       _isAITyping = true;
       _activeAiMessageIndex = null;
       _aiTranscriptSoFar = '';
     });
 
     if (_channel != null) {
-      _channel!.sink.add(jsonEncode({'type': 'text', 'text': text.trim()}));
+      _channel!.sink.add(jsonEncode({'type': 'text', 'text': trimmed}));
+      _startResponseTimeout(
+        'The AI backend did not answer in time. Check that the backend is running and reachable from this phone.',
+      );
     } else {
       final isSignedIn = FirebaseAuth.instance.currentUser != null;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -398,6 +576,40 @@ class _AIChatScreenState extends State<AIChatScreen>
     _controller.clear();
     _scrollToBottom();
     if (!_isTemporary) _saveCurrentSession();
+  }
+
+  Future<String> _answerFromLatestMeetingNote() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return 'Please sign in to access cloud meeting notes.';
+    }
+
+    final snap =
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .collection('meeting_notes')
+            .orderBy('updatedAt', descending: true)
+            .limit(1)
+            .get();
+
+    if (snap.docs.isEmpty) {
+      return 'I could not find any saved meeting notes yet. Start a meeting note from the drawer first.';
+    }
+
+    final note = MeetingNote.fromDoc(snap.docs.first);
+    if (note.summary.trim().isNotEmpty) {
+      return 'From your latest meeting notes:\n\n${note.summary}';
+    }
+
+    final text = note.rawTranscript.trim();
+    if (text.isEmpty) {
+      return 'Your latest meeting note exists but has no transcript yet.';
+    }
+
+    final clipped =
+        text.length > 1200 ? '${text.substring(0, 1200)}\n\n...' : text;
+    return 'From your latest meeting transcript:\n\n$clipped';
   }
 
   Future<void> _toggleListening() async {
@@ -489,6 +701,12 @@ class _AIChatScreenState extends State<AIChatScreen>
         _activeAiMessageIndex = null;
         _aiTranscriptSoFar = '';
       });
+      _appendMeetingLine(
+        'Patient',
+        source == ImageSource.camera
+            ? '[Shared a camera image]'
+            : '[Shared a gallery image]',
+      );
 
       _scrollToBottom();
 
@@ -510,10 +728,22 @@ class _AIChatScreenState extends State<AIChatScreen>
 
       _channel!.sink.add(
         jsonEncode({
+          'type': 'text',
+          'text':
+              'Please analyze this uploaded image. If it is a prescription, medical report, medicine box, or test result, explain what you can see in simple language and highlight any important medical details.',
+        }),
+      );
+
+      _channel!.sink.add(
+        jsonEncode({
           'type': 'image',
           'data': base64Encode(bytes),
           'mimeType': mimeType,
         }),
+      );
+
+      _startResponseTimeout(
+        'The uploaded image was sent, but the AI did not respond. This usually means the backend is unreachable or the build points to the wrong server.',
       );
     } catch (_) {
       if (mounted && !_disposed) {
@@ -532,6 +762,352 @@ class _AIChatScreenState extends State<AIChatScreen>
     }
   }
 
+  Future<void> _startMeetingNote() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in to start meeting notes.')),
+      );
+      return;
+    }
+
+    final notes = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('meeting_notes');
+
+    final now = DateTime.now();
+    final title =
+        'Meeting ${now.day}/${now.month}/${now.year} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final doc = notes.doc();
+
+    await doc.set({
+      'title': title,
+      'rawTranscript': '',
+      'summary': '',
+      'redFlags': <String>[],
+      'status': 'active',
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      'sessionId': _currentSessionId,
+    });
+
+    if (!mounted) return;
+    setState(() {
+      _isMeetingActive = true;
+      _activeMeetingNoteId = doc.id;
+      _meetingTranscriptBuffer = '';
+      _lastPersistedAiLine = '';
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('📝 Meeting note started (cloud).')),
+    );
+  }
+
+  Future<void> _endMeetingNote() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final noteId = _activeMeetingNoteId;
+    if (user == null || noteId == null) return;
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('meeting_notes')
+        .doc(noteId)
+        .set({
+          'status': 'completed',
+          'updatedAt': FieldValue.serverTimestamp(),
+          'endedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+    if (!mounted) return;
+    setState(() {
+      _isMeetingActive = false;
+      _activeMeetingNoteId = null;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('✅ Meeting note ended and saved to cloud.')),
+    );
+  }
+
+  Future<void> _appendMeetingLine(String speaker, String text) async {
+    if (!_isMeetingActive) return;
+    final user = FirebaseAuth.instance.currentUser;
+    final noteId = _activeMeetingNoteId;
+    if (user == null || noteId == null) return;
+
+    final line = '[${_timeOfDay(DateTime.now())}] $speaker: ${text.trim()}';
+    if (line.trim().isEmpty) return;
+
+    _meetingTranscriptBuffer =
+        _meetingTranscriptBuffer.isEmpty
+            ? line
+            : '$_meetingTranscriptBuffer\n$line';
+
+    final flags = _detectAllergyFlags(text);
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('meeting_notes')
+        .doc(noteId)
+        .set({
+          'rawTranscript': _meetingTranscriptBuffer,
+          'updatedAt': FieldValue.serverTimestamp(),
+          'redFlags': FieldValue.arrayUnion(flags),
+          'status': 'active',
+          'sessionId': _currentSessionId,
+        }, SetOptions(merge: true));
+  }
+
+  List<String> _detectAllergyFlags(String text) {
+    final lower = text.toLowerCase();
+    final hasMedicineContext =
+        lower.contains('prescribe') ||
+        lower.contains('medicine') ||
+        lower.contains('tablet') ||
+        lower.contains('capsule') ||
+        lower.contains('dose') ||
+        _knownMedicineTerms.any((m) => lower.contains(m));
+
+    if (!hasMedicineContext) return const [];
+
+    final flags = <String>[];
+    for (final allergy in _allergies) {
+      final a = allergy.toLowerCase().trim();
+      if (a.isEmpty) continue;
+      if (lower.contains(a)) {
+        flags.add(
+          'Possible allergy conflict: "$allergy" appears in medication discussion.',
+        );
+      }
+    }
+    return flags.toSet().toList();
+  }
+
+  Future<void> _summarizeMeetingNote(MeetingNote note) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in to summarize notes.')),
+      );
+      return;
+    }
+
+    final transcript = note.rawTranscript.trim();
+    if (transcript.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This note has no transcript yet.')),
+      );
+      return;
+    }
+
+    setState(() => _isSummarizingNote = true);
+
+    try {
+      final token = await user.getIdToken(true);
+      final uri = _summaryUri();
+
+      final client = HttpClient();
+      final req = await client.postUrl(uri);
+      req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+      req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      req.write(
+        jsonEncode({'transcript': transcript, 'allergies': _allergies}),
+      );
+
+      final resp = await req.close();
+      final body = await utf8.decodeStream(resp);
+
+      String summary = '';
+      List<String> redFlags = [];
+
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        final decoded = jsonDecode(body) as Map<String, dynamic>;
+        summary = (decoded['summary'] ?? '').toString().trim();
+        redFlags =
+            (decoded['red_flags'] as List<dynamic>? ?? [])
+                .map((e) => e.toString())
+                .toList();
+      } else {
+        summary = _fallbackSummary(transcript);
+      }
+
+      if (summary.isEmpty) summary = _fallbackSummary(transcript);
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('meeting_notes')
+          .doc(note.id)
+          .set({
+            'summary': summary,
+            'redFlags': FieldValue.arrayUnion(redFlags),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'summarizedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('✅ Meeting summary saved.')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not summarize note right now.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSummarizingNote = false);
+    }
+  }
+
+  Uri _summaryUri() {
+    final base = Uri.parse(_backendBase);
+    final scheme =
+        base.scheme == 'wss'
+            ? 'https'
+            : (base.scheme == 'ws' ? 'http' : base.scheme);
+    return Uri(
+      scheme: scheme,
+      host: base.host,
+      port: base.hasPort ? base.port : null,
+      path: '/notes/summarize',
+    );
+  }
+
+  String _fallbackSummary(String transcript) {
+    final lines =
+        transcript
+            .split('\n')
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+    if (lines.isEmpty) return 'No transcript available to summarize.';
+    final preview = lines.take(8).map((e) => '- $e').join('\n');
+    return 'Summary (fallback):\n$preview${lines.length > 8 ? '\n- ...' : ''}';
+  }
+
+  void _openMeetingNoteSheet(MeetingNote note) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      builder: (_) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  note.title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Status: ${note.status}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (note.redFlags.isNotEmpty)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '⚠️ Red flags',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 4),
+                        ...note.redFlags.map(
+                          (f) => Text(
+                            '• $f',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (note.redFlags.isNotEmpty) const SizedBox(height: 12),
+                Text(
+                  note.summary.trim().isEmpty
+                      ? 'No summary yet.'
+                      : note.summary,
+                  style: const TextStyle(fontSize: 13, height: 1.4),
+                ),
+                const SizedBox(height: 12),
+                if (note.rawTranscript.trim().isNotEmpty)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        note.rawTranscript,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed:
+                            _isSummarizingNote
+                                ? null
+                                : () => _summarizeMeetingNote(note),
+                        icon: const Icon(Icons.summarize_outlined),
+                        label: Text(
+                          _isSummarizingNote ? 'Summarizing...' : 'Summarize',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _sendMessage('What doctor told in my last meeting?');
+                        },
+                        icon: const Icon(Icons.chat_bubble_outline),
+                        label: const Text('Ask from note'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _timeOfDay(DateTime dt) {
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    final s = dt.second.toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_scrollController.hasClients) {
@@ -544,10 +1120,28 @@ class _AIChatScreenState extends State<AIChatScreen>
     });
   }
 
+  void _startResponseTimeout(String message) {
+    _responseTimeoutTimer?.cancel();
+    _responseTimeoutTimer = Timer(const Duration(seconds: 20), () {
+      if (!mounted || !_isAITyping) return;
+      setState(() => _isAITyping = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    });
+  }
+
+  void _cancelResponseTimeout() {
+    _responseTimeoutTimer?.cancel();
+    _responseTimeoutTimer = null;
+  }
+
   @override
   void dispose() {
     _disposed = true;
     _saveCurrentSession();
+    _aiNotePersistDebounce?.cancel();
+    _cancelResponseTimeout();
     _channelSubscription?.cancel();
     _controller.dispose();
     _scrollController.dispose();
@@ -580,12 +1174,17 @@ class _AIChatScreenState extends State<AIChatScreen>
               ),
             ),
             Text(
-              _isTemporary
-                  ? 'Not saved • closes when you leave'
-                  : 'Online • Ready to help',
+              _isMeetingActive
+                  ? '📝 Meeting note active (cloud)'
+                  : (_isTemporary
+                      ? 'Not saved • closes when you leave'
+                      : 'Online • Ready to help'),
               style: TextStyle(
                 fontSize: 11,
-                color: _isTemporary ? AppColors.accent : Colors.green,
+                color:
+                    _isMeetingActive
+                        ? AppColors.primary
+                        : (_isTemporary ? AppColors.accent : Colors.green),
               ),
             ),
           ],
@@ -593,6 +1192,18 @@ class _AIChatScreenState extends State<AIChatScreen>
         backgroundColor: Colors.white,
         elevation: 1,
         actions: [
+          IconButton(
+            icon: Icon(
+              _isMeetingActive
+                  ? Icons.stop_circle_outlined
+                  : Icons.note_add_outlined,
+              color:
+                  _isMeetingActive ? AppColors.accent : AppColors.textPrimary,
+            ),
+            tooltip:
+                _isMeetingActive ? 'End meeting note' : 'Start meeting note',
+            onPressed: _isMeetingActive ? _endMeetingNote : _startMeetingNote,
+          ),
           IconButton(
             icon: const Icon(
               Icons.add_comment_outlined,
@@ -648,6 +1259,8 @@ class _AIChatScreenState extends State<AIChatScreen>
   }
 
   Widget _buildDrawer() {
+    final user = FirebaseAuth.instance.currentUser;
+
     return Drawer(
       backgroundColor: Colors.white,
       child: SafeArea(
@@ -662,7 +1275,7 @@ class _AIChatScreenState extends State<AIChatScreen>
                 border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
               ),
               child: const Text(
-                '💬 Chats',
+                '💬 Chats & Notes',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -689,99 +1302,227 @@ class _AIChatScreenState extends State<AIChatScreen>
                 _startNewSession(temporary: true);
               },
             ),
-            Divider(color: Colors.grey.shade200, height: 1),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 12, 16, 6),
-              child: Text(
-                'PREVIOUS CHATS',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textSecondary,
-                  letterSpacing: 0.8,
-                ),
-              ),
+            _drawerActionTile(
+              icon:
+                  _isMeetingActive
+                      ? Icons.stop_circle_outlined
+                      : Icons.note_add_outlined,
+              label:
+                  _isMeetingActive ? 'End Meeting Note' : 'Start Meeting Note',
+              color: _isMeetingActive ? AppColors.accent : AppColors.secondary,
+              subtitle: 'Stores raw doctor-patient notes in cloud',
+              onTap: () async {
+                Navigator.pop(context);
+                if (_isMeetingActive) {
+                  await _endMeetingNote();
+                } else {
+                  await _startMeetingNote();
+                }
+              },
             ),
+            Divider(color: Colors.grey.shade200, height: 1),
             Expanded(
-              child:
-                  _sessions.isEmpty
-                      ? const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(24),
-                          child: Text(
-                            'No previous chats yet.\nStart a new chat above.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
+              child: ListView(
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 12, 16, 6),
+                    child: Text(
+                      'PREVIOUS CHATS',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textSecondary,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                  ),
+                  if (_sessions.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 6,
+                      ),
+                      child: Text(
+                        'No previous chats yet.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    )
+                  else
+                    ..._sessions.map((session) {
+                      final isActive = session.id == _currentSessionId;
+                      return Dismissible(
+                        key: Key('chat_${session.id}'),
+                        direction: DismissDirection.endToStart,
+                        background: Container(
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.only(right: 16),
+                          color: AppColors.accent.withValues(alpha: 0.15),
+                          child: const Icon(
+                            Icons.delete_outline,
+                            color: AppColors.accent,
+                          ),
+                        ),
+                        onDismissed: (_) => _deleteSession(session.id),
+                        child: ListTile(
+                          selected: isActive,
+                          selectedTileColor: AppColors.primary.withValues(
+                            alpha: 0.07,
+                          ),
+                          leading: CircleAvatar(
+                            radius: 18,
+                            backgroundColor:
+                                isActive
+                                    ? AppColors.primary
+                                    : AppColors.secondary.withValues(
+                                      alpha: 0.1,
+                                    ),
+                            child: Icon(
+                              Icons.chat_bubble_outline,
+                              size: 16,
+                              color:
+                                  isActive ? Colors.white : AppColors.secondary,
+                            ),
+                          ),
+                          title: Text(
+                            session.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
                               fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          subtitle: Text(
+                            _formatDate(session.createdAt),
+                            style: const TextStyle(
+                              fontSize: 11,
                               color: AppColors.textSecondary,
                             ),
                           ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _loadSession(session);
+                          },
                         ),
-                      )
-                      : ListView.builder(
-                        itemCount: _sessions.length,
-                        itemBuilder: (context, i) {
-                          final session = _sessions[i];
-                          final isActive = session.id == _currentSessionId;
-                          return Dismissible(
-                            key: Key(session.id),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 16),
-                              color: AppColors.accent.withValues(alpha: 0.15),
-                              child: const Icon(
-                                Icons.delete_outline,
-                                color: AppColors.accent,
-                              ),
+                      );
+                    }),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 16, 16, 6),
+                    child: Text(
+                      'MEETING NOTES (CLOUD)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textSecondary,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                  ),
+                  if (user == null)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 6,
+                      ),
+                      child: Text(
+                        'Sign in to view cloud notes.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    )
+                  else
+                    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream:
+                          FirebaseFirestore.instance
+                              .collection('users')
+                              .doc(user.uid)
+                              .collection('meeting_notes')
+                              .orderBy('updatedAt', descending: true)
+                              .limit(20)
+                              .snapshots(),
+                      builder: (context, snap) {
+                        if (!snap.hasData) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
                             ),
-                            onDismissed: (_) => _deleteSession(session.id),
-                            child: ListTile(
-                              selected: isActive,
-                              selectedTileColor: AppColors.primary.withValues(
-                                alpha: 0.07,
-                              ),
-                              leading: CircleAvatar(
-                                radius: 18,
-                                backgroundColor:
-                                    isActive
-                                        ? AppColors.primary
-                                        : AppColors.secondary.withValues(
-                                          alpha: 0.1,
-                                        ),
-                                child: Icon(
-                                  Icons.chat_bubble_outline,
-                                  size: 16,
-                                  color:
-                                      isActive
-                                          ? Colors.white
-                                          : AppColors.secondary,
-                                ),
-                              ),
-                              title: Text(
-                                session.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              subtitle: Text(
-                                _formatDate(session.createdAt),
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.textSecondary,
-                                ),
-                              ),
-                              onTap: () {
-                                Navigator.pop(context);
-                                _loadSession(session);
-                              },
+                            child: Text(
+                              'Loading notes...',
+                              style: TextStyle(fontSize: 12),
                             ),
                           );
-                        },
-                      ),
+                        }
+
+                        final notes =
+                            snap.data!.docs.map(MeetingNote.fromDoc).toList();
+                        if (notes.isEmpty) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 6,
+                            ),
+                            child: Text(
+                              'No meeting notes yet. Start one from above.',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                          );
+                        }
+
+                        return Column(
+                          children:
+                              notes.map((n) {
+                                return ListTile(
+                                  leading: CircleAvatar(
+                                    radius: 16,
+                                    backgroundColor:
+                                        (n.redFlags.isNotEmpty)
+                                            ? AppColors.accent.withValues(
+                                              alpha: 0.2,
+                                            )
+                                            : AppColors.primary.withValues(
+                                              alpha: 0.12,
+                                            ),
+                                    child: Icon(
+                                      n.redFlags.isNotEmpty
+                                          ? Icons.warning_amber_outlined
+                                          : Icons.note_alt_outlined,
+                                      size: 16,
+                                      color:
+                                          n.redFlags.isNotEmpty
+                                              ? AppColors.accent
+                                              : AppColors.primary,
+                                    ),
+                                  ),
+                                  title: Text(
+                                    n.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    '${_formatDate(n.updatedAt ?? n.createdAt ?? DateTime.now())}${n.redFlags.isNotEmpty ? ' • ${n.redFlags.length} red flag(s)' : ''}',
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
+                                  onTap: () => _openMeetingNoteSheet(n),
+                                );
+                              }).toList(),
+                        );
+                      },
+                    ),
+                ],
+              ),
             ),
           ],
         ),

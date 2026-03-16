@@ -73,6 +73,40 @@ Current behavior:
 - `.env`
   - local placeholder values for local runs
 
+- deployment automation
+  - `deploy_all.ps1`
+  - `deploy_all.sh`
+
+---
+
+## Automated cloud deployment evidence
+
+If you need to show proof that deployment is automated with scripts / deployment code, use these files and sections:
+
+- `deploy-to-cloud-run/deploy_all.ps1` → one-command PowerShell deployment for Windows
+- `deploy-to-cloud-run/deploy_all.sh` → one-command Bash deployment for Cloud Shell / Linux
+- `deploy-to-cloud-run/mcp-server/Dockerfile` → codified MCP container build
+- `deploy-to-cloud-run/myAgent/Dockerfile` → codified agent / A2A container build
+
+These automation files do the following:
+
+1. enable required Google Cloud APIs
+2. create/update Secret Manager values
+3. grant runtime secret access
+4. build container images with Cloud Build
+5. deploy MCP to Cloud Run
+6. deploy ADK UI to Cloud Run
+7. deploy A2A to Cloud Run
+8. attach secrets and environment variables automatically
+
+For submission answers, the strongest file link is:
+
+- `deploy-to-cloud-run/deploy_all.ps1`
+
+or, if Bash / Cloud Shell is preferred:
+
+- `deploy-to-cloud-run/deploy_all.sh`
+
 ---
 
 ## Current architecture

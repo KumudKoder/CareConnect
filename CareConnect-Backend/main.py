@@ -5,6 +5,7 @@ import base64
 import logging
 import warnings
 from pathlib import Path
+from typing import List
 
 # Load .env FIRST so GOOGLE_API_KEY is available before any google.adk import
 from dotenv import load_dotenv
@@ -28,13 +29,15 @@ except Exception as _init_err:
         logging.getLogger(__name__).warning(
             f'Firebase Admin init issue: {_init_err}; fallback failed: {_init_err_2}'
         )
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException
+from pydantic import BaseModel
 from google.adk.agents import Agent
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.genai import types
+from google import genai
 from google.adk.tools import google_search
 
 # Configure logging
@@ -88,6 +91,7 @@ BASE_AGENT_INSTRUCTION = (
     "If past data is missing, explicitly ask the user to share previous prescriptions/reports or scan them before concluding. "
     "When comparing current vs past records, explicitly list matches, possible mismatches, and missing information. "
     "Never claim definitive diagnosis or accuse clinicians of error; instead flag possible issues that need clinician confirmation."
+    "When user asks what happened in a doctor meeting, help summarize clearly from provided notes/transcript and call out medicine-allergy risks explicitly."
 )
 
 CAPABILITIES_RESPONSE_POLICY = (
@@ -120,6 +124,119 @@ session_service = InMemorySessionService()
 
 # Runner wires the agent + session together
 runner = Runner(app_name=APP_NAME, agent=agent, session_service=session_service)
+
+
+class NoteSummaryRequest(BaseModel):
+    transcript: str
+    allergies: List[str] = []
+
+
+class NoteSummaryResponse(BaseModel):
+    summary: str
+    red_flags: List[str]
+
+
+def _verify_bearer_token(authorization_header: str | None) -> str:
+    """Returns UID if verified or raises HTTPException."""
+    if SKIP_TOKEN_VERIFY:
+        return "guest"
+
+    if not authorization_header:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    token = authorization_header.strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    try:
+        decoded = auth.verify_id_token(token)
+        uid = decoded.get("uid")
+        if not uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return uid
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"Token verification failed: {exc}")
+        raise HTTPException(status_code=401, detail="Token verification failed")
+
+
+def _extract_allergy_flags(transcript: str, allergies: List[str]) -> List[str]:
+    flags: List[str] = []
+    text = (transcript or "").lower()
+    keywords = ("prescribe", "prescribed", "medicine", "tablet", "capsule", "dose", "take")
+    has_med_context = any(k in text for k in keywords)
+
+    for raw in allergies:
+        allergy = (raw or "").strip()
+        if not allergy:
+            continue
+        if allergy.lower() in text and has_med_context:
+            flags.append(
+                f"Possible allergy conflict detected: '{allergy}' appears in meeting conversation with medication context."
+            )
+
+    # Deduplicate while preserving order
+    deduped: List[str] = []
+    for f in flags:
+        if f not in deduped:
+            deduped.append(f)
+    return deduped
+
+
+def _fallback_summary(transcript: str) -> str:
+    lines = [ln.strip() for ln in (transcript or "").splitlines() if ln.strip()]
+    if not lines:
+        return "No transcript available to summarize."
+
+    preview = lines[:8]
+    return (
+        "Summary (fallback):\n"
+        + "\n".join(f"- {ln[:220]}" for ln in preview)
+        + ("\n- ..." if len(lines) > len(preview) else "")
+    )
+
+
+@app.post("/notes/summarize", response_model=NoteSummaryResponse)
+async def summarize_note(
+    payload: NoteSummaryRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Summarize a doctor-patient meeting transcript and flag allergy risks."""
+    _uid = _verify_bearer_token(authorization)
+
+    transcript = (payload.transcript or "").strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Transcript is empty")
+
+    red_flags = _extract_allergy_flags(transcript, payload.allergies)
+
+    summary = ""
+    api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+    if api_key:
+        try:
+            client = genai.Client(api_key=api_key)
+            prompt = (
+                "You are a clinical note assistant. Summarize this doctor-patient conversation in plain language. "
+                "Return: (1) key complaints, (2) doctor advice, (3) medicines and dosage/frequency/duration if present, "
+                "(4) follow-up actions, (5) warning signs to monitor. Keep concise but complete.\n\n"
+                f"Transcript:\n{transcript}"
+            )
+            result = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+            )
+            summary = (getattr(result, "text", None) or "").strip()
+        except Exception as exc:
+            logger.warning(f"AI summarization failed, using fallback summary: {exc}")
+
+    if not summary:
+        summary = _fallback_summary(transcript)
+
+    return NoteSummaryResponse(summary=summary, red_flags=red_flags)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. WEBSOCKET ENDPOINT  (pattern from google/adk-samples bidi-demo)

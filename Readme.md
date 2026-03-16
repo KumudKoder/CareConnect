@@ -123,6 +123,7 @@ This is the fastest local flow used in this repo.
 - Firebase files already configured in app (present in this repo)
 
 Before first run, configure your Firebase project:
+
 - Generate `firebase_options.dart` using FlutterFire CLI **or** fill the placeholders in `careconnect_app/lib/firebase_options.dart`
 - Add your own `google-services.json` to `careconnect_app/android/app/`
 - (If using iOS) add your own `GoogleService-Info.plist`
@@ -178,6 +179,117 @@ flutter run -d <android-device-id> --dart-define=CARECONNECT_WS_BASE=ws://<your-
 - If app installs then `Lost connection to device`, app can still be running on device. Re-run `flutter run` to reattach.
 - If backend auth fails in local testing, verify Firebase project and token flow.
 - If AI chat says not connected, verify backend is running and `CARECONNECT_WS_BASE` is reachable from the device/network.
+
+---
+
+## Reproducible testing
+
+Use the steps below when you want another developer, reviewer, or judge to reproduce the current behavior consistently.
+
+### Test environment assumptions
+
+- Windows machine with Flutter, Android SDK, ADB, and Python installed
+- Android phone connected by USB with debugging enabled
+- Backend dependencies installed from `CareConnect-Backend/requirements.txt`
+- Firebase configured with your own project values
+- Phone and laptop on the same network if the app must reach the local backend over Wi‑Fi
+
+### 1) Start from a clean state
+
+From repo root:
+
+```powershell
+Set-Location "<path-to-repo>\careconnect_app"
+flutter clean
+flutter pub get
+```
+
+From the backend folder:
+
+```powershell
+Set-Location "<path-to-repo>\CareConnect-Backend"
+if (-not (Test-Path ".\venv\Scripts\python.exe")) { python -m venv venv }
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 2) Run static verification
+
+Flutter checks:
+
+```powershell
+Set-Location "<path-to-repo>\careconnect_app"
+flutter analyze
+flutter test
+```
+
+Backend smoke import / startup check:
+
+```powershell
+Set-Location "<path-to-repo>\CareConnect-Backend"
+.\venv\Scripts\python.exe main.py
+```
+
+Expected result:
+
+- Flutter analyzer completes without relevant errors
+- Flutter tests pass
+- Backend starts and exposes `http://127.0.0.1:8081/health`
+
+### 3) Verify backend health endpoint
+
+In a new terminal:
+
+```powershell
+Invoke-WebRequest -Uri "http://127.0.0.1:8081/health" -UseBasicParsing
+```
+
+Expected result: HTTP 200 with a healthy status payload.
+
+### 4) Run on a physical Android phone
+
+Get your local IP address and device id, then launch:
+
+```powershell
+Set-Location "<path-to-repo>\careconnect_app"
+adb devices -l
+flutter run -d <android-device-id> --dart-define=CARECONNECT_WS_BASE=ws://<your-local-ip>:8081
+```
+
+Expected result:
+
+- app installs on the phone
+- login screen/dashboard opens
+- AI chat opens without crashing
+- app can reach the backend if the phone can access `<your-local-ip>:8081`
+
+### 5) Functional regression checklist
+
+Use this exact checklist for consistent manual validation:
+
+1. Sign in with a test account.
+2. Open **AI Chat** and send a text prompt.
+3. Use the **camera** in chat and verify no crash occurs.
+4. Use the **gallery** in chat and verify image upload works.
+5. Start a **Meeting Note**, exchange a few messages, and stop the note.
+6. Open the chat drawer and confirm the meeting note appears under cloud notes.
+7. Open that note and run **Summarize**.
+8. Ask: `What doctor told in my last meeting?`
+9. Open **Prescription Scanner**, scan a prescription image, and confirm extracted medicines appear.
+10. Open **My Medicines**, confirm records are linked to the signed-in account, then remove one medicine.
+
+### 6) Artifact locations for verification
+
+After a successful debug build, the APK should be present at one of these paths:
+
+- `careconnect_app/build/app/outputs/flutter-apk/app-debug.apk`
+- `careconnect_app/build/app/outputs/apk/debug/app-debug.apk`
+
+### Notes for reviewers
+
+- If the backend is not publicly deployed, local AI chat features depend on the laptop-hosted backend being reachable from the phone.
+- If real Firebase credentials are not configured, authentication-dependent flows will not be reproducible.
+- For broader sharing, prefer a release build and a cloud-hosted backend over a debug APK and local IP.
 
 ---
 

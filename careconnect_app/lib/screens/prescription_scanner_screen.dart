@@ -54,7 +54,7 @@ class PrescriptionScannerScreen extends StatefulWidget {
 class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
   static const String _backendBase = String.fromEnvironment(
     'CARECONNECT_WS_BASE',
-    defaultValue: 'ws://192.168.29.62:8081',
+    defaultValue: '',
   );
 
   File? _capturedImage;
@@ -143,6 +143,12 @@ class _PrescriptionScannerScreenState extends State<PrescriptionScannerScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       throw Exception('Please sign in before scanning prescription.');
+    }
+
+    if (_backendBase.trim().isEmpty) {
+      throw Exception(
+        'AI backend is not configured in this build. Rebuild with CARECONNECT_WS_BASE pointing to a reachable backend.',
+      );
     }
 
     final token = await user.getIdToken(true);
