@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# CareConnect pre-commit hook
+# Runs a lightweight staged secret scan before allowing commit.
+
+if command -v python3 >/dev/null 2>&1; then
+  python3 .githooks/secret_scan.py
+  exit $?
+fi
+
+if command -v python >/dev/null 2>&1; then
+  python .githooks/secret_scan.py
+  exit $?
+fi
+
+if command -v py >/dev/null 2>&1; then
+  py -3 .githooks/secret_scan.py
+  exit $?
+fi
+
+echo "[secret-scan] Python not found. Install Python to enable local secret scanning."
+exit 1

@@ -7,6 +7,14 @@ AI-powered healthcare assistant with a Flutter mobile app, real-time Gemini-back
 > You must configure **your own** API keys, Firebase config, service-account credentials, and environment variables before running.
 > Never commit real keys/tokens/secrets to GitHub.
 
+> [!TIP]
+> **Enable local secret scanning (recommended):** run this once in repo root:
+>
+> `git config core.hooksPath .githooks`
+>
+> This activates the included pre-commit scanner (`.githooks/secret_scan.py`) so commits with likely secrets are blocked locally.
+> A GitHub Actions workflow (`.github/workflows/secret-scan.yml`) also scans pushes/PRs in CI.
+
 ---
 
 ## What this project solves in real life
