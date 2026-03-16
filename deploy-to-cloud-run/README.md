@@ -7,6 +7,13 @@ This README documents **only the current working CareConnect setup** and gives y
 
 It also lists the **required APIs, IAM access, runtime access, and direct console links**.
 
+> [!NOTE]
+> To avoid exposing environment-specific identifiers, this runbook uses placeholders:
+> - Cloud Run URL pattern: `https://<service>-<project-number>.<region>.run.app`
+> - Project ID: `<project-id>`
+> - Project Number: `<project-number>`
+> - Region: `<region>`
+
 ---
 
 ## Current live services
@@ -14,8 +21,8 @@ It also lists the **required APIs, IAM access, runtime access, and direct consol
 ### 1. MCP server
 
 - Service: `careconnect-mcp-server`
-- Base URL: `https://careconnect-mcp-server-1023139347696.us-central1.run.app`
-- MCP endpoint: `https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp`
+- Base URL: `https://careconnect-mcp-server-<project-number>.<region>.run.app`
+- MCP endpoint: `https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp`
 - Source: `mcp-server/server.py`
 - Deploy method: Docker image via Cloud Build + Cloud Run
 
@@ -29,7 +36,7 @@ Current MCP tools:
 ### 2. ADK Web UI
 
 - Service: `careconnect-adk-ui`
-- URL: `https://careconnect-adk-ui-1023139347696.us-central1.run.app`
+- URL: `https://careconnect-adk-ui-<project-number>.<region>.run.app`
 - Source: `myAgent/agent.py`
 - Deploy method: `adk deploy cloud_run --with_ui`
 
@@ -43,8 +50,8 @@ Current behavior:
 ### 3. A2A service
 
 - Service: `careconnect-a2a`
-- URL: `https://careconnect-a2a-1023139347696.us-central1.run.app`
-- Agent card: `https://careconnect-a2a-1023139347696.us-central1.run.app/.well-known/agent.json`
+- URL: `https://careconnect-a2a-<project-number>.<region>.run.app`
+- Agent card: `https://careconnect-a2a-<project-number>.<region>.run.app/.well-known/agent.json`
 - Agent source: `myAgent/agent.py`
 - A2A wrapper: `myAgent/a2a_main.py`
 - Deploy method: Docker image via Cloud Build + Cloud Run
@@ -99,7 +106,7 @@ These automation files do the following:
 7. deploy A2A to Cloud Run
 8. attach secrets and environment variables automatically
 
-For submission answers, the strongest file link is:
+For submission answers, the file link is:
 
 - `deploy-to-cloud-run/deploy_all.ps1`
 
@@ -140,21 +147,21 @@ The A2A service exposes the same agent to other systems using the A2A protocol.
 
 ## Project values used now
 
-- Project ID: `agent-490407`
-- Region: `us-central1`
-- Runtime service account: `1023139347696-compute@developer.gserviceaccount.com`
+- Project ID: `<project-id>`
+- Region: `<region>`
+- Runtime service account: `<project-number>-compute@developer.gserviceaccount.com`
 - Secret name: `GOOGLE_API_KEY`
-- MCP URL: `https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp`
-- ADK UI URL: `https://careconnect-adk-ui-1023139347696.us-central1.run.app`
-- A2A URL: `https://careconnect-a2a-1023139347696.us-central1.run.app`
+- MCP URL: `https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp`
+- ADK UI URL: `https://careconnect-adk-ui-<project-number>.<region>.run.app`
+- A2A URL: `https://careconnect-a2a-<project-number>.<region>.run.app`
 
 Runtime environment values:
 
 - `GOOGLE_API_KEY`
 - `GOOGLE_GENAI_USE_VERTEXAI=false`
-- `MCP_SERVER_URL=https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp`
-- `GOOGLE_CLOUD_PROJECT=agent-490407`
-- `GOOGLE_CLOUD_LOCATION=us-central1`
+- `MCP_SERVER_URL=https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp`
+- `GOOGLE_CLOUD_PROJECT=<project-id>`
+- `GOOGLE_CLOUD_LOCATION=<region>`
 
 ---
 
@@ -162,7 +169,7 @@ Runtime environment values:
 
 ### Access needed for the person running deploy commands
 
-The user or admin account running these commands should have these practical roles on project `agent-490407`:
+The user or admin account running these commands should have these practical roles on project `<project-id>`:
 
 - `roles/run.admin`
 - `roles/cloudbuild.builds.editor`
@@ -202,7 +209,7 @@ If builds fail due to organization restrictions, check:
 
 ## APIs that must be enabled
 
-Enable these APIs in project `agent-490407`:
+Enable these APIs in project `<project-id>`:
 
 - `run.googleapis.com`
 - `cloudbuild.googleapis.com`
@@ -219,22 +226,22 @@ Recommended additional API for general project management and IAM workflows:
 
 ### Google Cloud Console links
 
-- Project dashboard: `https://console.cloud.google.com/home/dashboard?project=agent-490407`
-- Cloud Run services: `https://console.cloud.google.com/run?project=agent-490407`
-- Cloud Build history: `https://console.cloud.google.com/cloud-build/builds?project=agent-490407`
-- Secret Manager: `https://console.cloud.google.com/security/secret-manager?project=agent-490407`
-- IAM page: `https://console.cloud.google.com/iam-admin/iam?project=agent-490407`
-- Service Accounts: `https://console.cloud.google.com/iam-admin/serviceaccounts?project=agent-490407`
-- APIs library: `https://console.cloud.google.com/apis/library?project=agent-490407`
-- Enabled APIs: `https://console.cloud.google.com/apis/dashboard?project=agent-490407`
-- Logs Explorer: `https://console.cloud.google.com/logs/query?project=agent-490407`
+- Project dashboard: `https://console.cloud.google.com/home/dashboard?project=<project-id>`
+- Cloud Run services: `https://console.cloud.google.com/run?project=<project-id>`
+- Cloud Build history: `https://console.cloud.google.com/cloud-build/builds?project=<project-id>`
+- Secret Manager: `https://console.cloud.google.com/security/secret-manager?project=<project-id>`
+- IAM page: `https://console.cloud.google.com/iam-admin/iam?project=<project-id>`
+- Service Accounts: `https://console.cloud.google.com/iam-admin/serviceaccounts?project=<project-id>`
+- APIs library: `https://console.cloud.google.com/apis/library?project=<project-id>`
+- Enabled APIs: `https://console.cloud.google.com/apis/dashboard?project=<project-id>`
+- Logs Explorer: `https://console.cloud.google.com/logs/query?project=<project-id>`
 
 ### Current app links
 
-- MCP endpoint: `https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp`
-- ADK UI: `https://careconnect-adk-ui-1023139347696.us-central1.run.app`
-- A2A service: `https://careconnect-a2a-1023139347696.us-central1.run.app`
-- A2A agent card: `https://careconnect-a2a-1023139347696.us-central1.run.app/.well-known/agent.json`
+- MCP endpoint: `https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp`
+- ADK UI: `https://careconnect-adk-ui-<project-number>.<region>.run.app`
+- A2A service: `https://careconnect-a2a-<project-number>.<region>.run.app`
+- A2A agent card: `https://careconnect-a2a-<project-number>.<region>.run.app/.well-known/agent.json`
 
 ---
 
@@ -258,13 +265,13 @@ Optional but recommended:
 
 ```powershell
 $GCLOUD = 'C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
-$PROJECT_ID = 'agent-490407'
-$REGION = 'us-central1'
-$RUNTIME_SA = '1023139347696-compute@developer.gserviceaccount.com'
+$PROJECT_ID = '<project-id>'
+$REGION = '<region>'
+$RUNTIME_SA = '<project-number>-compute@developer.gserviceaccount.com'
 $MCP_SERVICE = 'careconnect-mcp-server'
 $UI_SERVICE = 'careconnect-adk-ui'
 $A2A_SERVICE = 'careconnect-a2a'
-$MCP_URL = 'https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp'
+$MCP_URL = 'https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp'
 ```
 
 ### 2. Authenticate and select project
@@ -310,7 +317,7 @@ Remove-Item $tmp
 Run from `deploy-to-cloud-run/mcp-server`:
 
 ```powershell
-Set-Location 'c:\Users\Kumud\Downloads\careconnect\Agent\deploy-to-cloud-run\mcp-server'
+Set-Location '<path-to-repo>\deploy-to-cloud-run\mcp-server'
 
 & $GCLOUD builds submit --tag gcr.io/$PROJECT_ID/careconnect-mcp-server
 
@@ -322,7 +329,7 @@ Set-Location 'c:\Users\Kumud\Downloads\careconnect\Agent\deploy-to-cloud-run\mcp
 Run from the repo root `Agent`:
 
 ```powershell
-Set-Location 'c:\Users\Kumud\Downloads\careconnect\Agent'
+Set-Location '<path-to-repo>'
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -334,10 +341,10 @@ pip install google-adk
 Run from `deploy-to-cloud-run`:
 
 ```powershell
-Set-Location 'c:\Users\Kumud\Downloads\careconnect\Agent\deploy-to-cloud-run'
+Set-Location '<path-to-repo>\deploy-to-cloud-run'
 $env:Path = 'C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin;' + $env:Path
 
-& 'c:/Users/Kumud/Downloads/careconnect/Agent/.venv/Scripts/adk.exe' deploy cloud_run --project=$PROJECT_ID --region=$REGION --service_name=$UI_SERVICE --app_name=CareConnectApp --with_ui .\myAgent
+& '<path-to-repo>/.venv/Scripts/adk.exe' deploy cloud_run --project=$PROJECT_ID --region=$REGION --service_name=$UI_SERVICE --app_name=CareConnectApp --with_ui .\myAgent
 ```
 
 Attach env vars and secret after deploy:
@@ -351,7 +358,7 @@ Attach env vars and secret after deploy:
 Run from `deploy-to-cloud-run/myAgent`:
 
 ```powershell
-Set-Location 'c:\Users\Kumud\Downloads\careconnect\Agent\deploy-to-cloud-run\myAgent'
+Set-Location '<path-to-repo>\deploy-to-cloud-run\myAgent'
 
 & $GCLOUD builds submit --tag gcr.io/$PROJECT_ID/careconnect-a2a
 
@@ -361,9 +368,9 @@ Set-Location 'c:\Users\Kumud\Downloads\careconnect\Agent\deploy-to-cloud-run\myA
 ### 10. Verify live services
 
 ```powershell
-Invoke-WebRequest -Uri 'https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp' -Method Get -UseBasicParsing
-Invoke-WebRequest -Uri 'https://careconnect-adk-ui-1023139347696.us-central1.run.app' -UseBasicParsing
-Invoke-WebRequest -Uri 'https://careconnect-a2a-1023139347696.us-central1.run.app/.well-known/agent.json' -UseBasicParsing
+Invoke-WebRequest -Uri 'https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp' -Method Get -UseBasicParsing
+Invoke-WebRequest -Uri 'https://careconnect-adk-ui-<project-number>.<region>.run.app' -UseBasicParsing
+Invoke-WebRequest -Uri 'https://careconnect-a2a-<project-number>.<region>.run.app/.well-known/agent.json' -UseBasicParsing
 ```
 
 Notes:
@@ -435,13 +442,13 @@ If needed, upload the repo or clone it into Cloud Shell first.
 ### 1. Set variables
 
 ```bash
-export PROJECT_ID='agent-490407'
-export REGION='us-central1'
-export RUNTIME_SA='1023139347696-compute@developer.gserviceaccount.com'
+export PROJECT_ID='<project-id>'
+export REGION='<region>'
+export RUNTIME_SA='<project-number>-compute@developer.gserviceaccount.com'
 export MCP_SERVICE='careconnect-mcp-server'
 export UI_SERVICE='careconnect-adk-ui'
 export A2A_SERVICE='careconnect-a2a'
-export MCP_URL='https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp'
+export MCP_URL='https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp'
 
 gcloud config set project "$PROJECT_ID"
 ```
@@ -553,9 +560,9 @@ gcloud run deploy "$A2A_SERVICE" \
 ### 9. Verify live services
 
 ```bash
-curl -i 'https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp'
-curl -i 'https://careconnect-adk-ui-1023139347696.us-central1.run.app'
-curl -i 'https://careconnect-a2a-1023139347696.us-central1.run.app/.well-known/agent.json'
+curl -i 'https://careconnect-mcp-server-<project-number>.<region>.run.app/mcp'
+curl -i 'https://careconnect-adk-ui-<project-number>.<region>.run.app'
+curl -i 'https://careconnect-a2a-<project-number>.<region>.run.app/.well-known/agent.json'
 ```
 
 ### 10. Useful Cloud Shell operations

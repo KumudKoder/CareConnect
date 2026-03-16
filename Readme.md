@@ -2,6 +2,12 @@
 
 AI-powered healthcare assistant with a Flutter mobile app, real-time Gemini-backed chat backend, prescription analysis, and cloud-deployed agent services (MCP + ADK UI + A2A) on Google Cloud Run.
 
+## Cloud deployment runbook
+
+For full Cloud Run deployment steps (MCP + ADK UI + A2A), see:
+
+- `deploy-to-cloud-run/README.md`
+
 > [!IMPORTANT]
 > **Security first:** this repository does **not** ship with usable private credentials.
 > You must configure **your own** API keys, Firebase config, service-account credentials, and environment variables before running.
@@ -297,16 +303,21 @@ After a successful debug build, the APK should be present at one of these paths:
 
 Current live services are deployed on Google Cloud Run.
 
+> [!NOTE]
+> For security and portability, concrete project identifiers are intentionally replaced with placeholders below.
+> Use this pattern for Cloud Run services:
+> `https://<service>-<project-number>.<region>.run.app`
+
 ### Live endpoints
 
 - MCP endpoint:  
-  `https://careconnect-mcp-server-1023139347696.us-central1.run.app/mcp`
+  `https://<mcp-service>-<project-number>.<region>.run.app/mcp`
 - ADK Web UI:  
-  `https://careconnect-adk-ui-1023139347696.us-central1.run.app`
+  `https://<adk-ui-service>-<project-number>.<region>.run.app`
 - A2A service:  
-  `https://careconnect-a2a-1023139347696.us-central1.run.app`
+  `https://<a2a-service>-<project-number>.<region>.run.app`
 - A2A agent card:  
-  `https://careconnect-a2a-1023139347696.us-central1.run.app/.well-known/agent.json`
+  `https://<a2a-service>-<project-number>.<region>.run.app/.well-known/agent.json`
 
 ### How anyone can access and use the agent
 
