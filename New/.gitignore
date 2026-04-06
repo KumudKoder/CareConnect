@@ -1,0 +1,41 @@
+# Python
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Service account / credentials
+*.pem
+*.p12
+*.key
+*credentials*.json
+*service-account*.json
+*key*.json
+*.secret
+
+# Local secret/archive folder (never commit)
+deploy-to-cloud-run/irrelevant-files/samples-and-secrets/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/*.log
+
+# Logs / temp / local db
+*.log
+*.tmp
+*.pid
+*.db
+*.sqlite
+*.sqlite3
+*.local
