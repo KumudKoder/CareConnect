@@ -19,10 +19,10 @@ If your GCP project, AlloyDB, VPC connector, and secrets are already ready:
 
 ```powershell
 ./deploy_new.ps1 `
-  -ProjectId agent-490407 `
-  -Region us-central1 `
-  -AlloydbInstanceUri "projects/agent-490407/locations/us-central1/clusters/careconnect-cluster/instances/careconnect-primary" `
-  -AlloydbDbName "careconnectdb" `
+   -ProjectId "<YOUR_PROJECT_ID>" `
+   -Region "<YOUR_REGION>" `
+   -AlloydbInstanceUri "projects/<YOUR_PROJECT_ID>/locations/<YOUR_REGION>/clusters/<YOUR_CLUSTER>/instances/<YOUR_INSTANCE>" `
+   -AlloydbDbName "<YOUR_DB_NAME>" `
   -AlloydbDbUser "postgres" `
   -AlloydbDbPassword "<YOUR_DB_PASSWORD>"
 ```
@@ -62,8 +62,8 @@ pip install google-adk
 Replace values if needed:
 
 ```powershell
-$PROJECT_ID = "agent-490407"
-$REGION = "us-central1"
+$PROJECT_ID = "<YOUR_PROJECT_ID>"
+$REGION = "<YOUR_REGION>"
 
 gcloud config set project $PROJECT_ID
 gcloud services enable `
@@ -101,10 +101,10 @@ From this folder (`New/deploy-to-cloud-run`), run:
 
 ```powershell
 ./deploy_new.ps1 `
-  -ProjectId agent-490407 `
-  -Region us-central1 `
-  -AlloydbInstanceUri "projects/agent-490407/locations/us-central1/clusters/careconnect-cluster/instances/careconnect-primary" `
-  -AlloydbDbName "careconnectdb" `
+   -ProjectId "<YOUR_PROJECT_ID>" `
+   -Region "<YOUR_REGION>" `
+   -AlloydbInstanceUri "projects/<YOUR_PROJECT_ID>/locations/<YOUR_REGION>/clusters/<YOUR_CLUSTER>/instances/<YOUR_INSTANCE>" `
+   -AlloydbDbName "<YOUR_DB_NAME>" `
   -AlloydbDbUser "postgres" `
   -AlloydbDbPassword "<YOUR_DB_PASSWORD>"
 ```
@@ -156,11 +156,11 @@ Use `.env` only for local convenience. Keep real secrets out of git.
 
 Recommended values:
 
-- `GOOGLE_CLOUD_PROJECT=agent-490407`
-- `GOOGLE_CLOUD_LOCATION=us-central1`
+- `GOOGLE_CLOUD_PROJECT=<YOUR_PROJECT_ID>`
+- `GOOGLE_CLOUD_LOCATION=<YOUR_REGION>`
 - `GOOGLE_GENAI_USE_VERTEXAI=true`
-- `ALLOYDB_INSTANCE_URI=projects/agent-490407/locations/us-central1/clusters/careconnect-cluster/instances/careconnect-primary`
-- `ALLOYDB_DB_NAME=careconnectdb`
+- `ALLOYDB_INSTANCE_URI=projects/<YOUR_PROJECT_ID>/locations/<YOUR_REGION>/clusters/<YOUR_CLUSTER>/instances/<YOUR_INSTANCE>`
+- `ALLOYDB_DB_NAME=<YOUR_DB_NAME>`
 - `ALLOYDB_DB_USER=postgres`
 - `ALLOYDB_ENABLE_IAM_AUTH=false`
 
