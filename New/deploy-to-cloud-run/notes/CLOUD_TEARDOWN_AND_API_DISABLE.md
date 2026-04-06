@@ -2,7 +2,7 @@
 
 Use this guide to fully clean up CareConnect resources in GCP and reduce/stop billing.
 
-> Project used in this workspace: `agent-490407`
+> Project used in this workspace: `<YOUR_PROJECT_ID>`
 > Region: `us-central1`
 
 ---
@@ -22,8 +22,8 @@ Before deleting anything:
 Run in Cloud Shell:
 
 ```bash
-gcloud config set project agent-490407
-PROJECT_ID="agent-490407"
+gcloud config set project <YOUR_PROJECT_ID>
+PROJECT_ID="<YOUR_PROJECT_ID>"
 REGION="us-central1"
 ```
 
@@ -50,12 +50,12 @@ gcloud run services list --region="$REGION"
 Delete instance first, then cluster:
 
 ```bash
-gcloud alloydb instances delete careconnect-primary \
-  --cluster=careconnect-cluster \
+gcloud alloydb instances delete <YOUR_INSTANCE> `
+  --cluster=<YOUR_CLUSTER> `
   --region="$REGION" \
   --quiet
 
-gcloud alloydb clusters delete careconnect-cluster \
+gcloud alloydb clusters delete <YOUR_CLUSTER> `
   --region="$REGION" \
   --quiet
 ```
@@ -71,7 +71,7 @@ gcloud alloydb clusters list --region="$REGION"
 ## 4) Delete Serverless VPC connector
 
 ```bash
-gcloud compute networks vpc-access connectors delete careconnect-vpc-connector \
+gcloud compute networks vpc-access connectors delete <YOUR_VPC_CONNECTOR> `
   --region="$REGION" \
   --quiet
 ```
@@ -173,7 +173,7 @@ If you granted temporary access to users/service accounts, remove those IAM bind
 If this project is only for this app, delete the entire project:
 
 ```bash
-gcloud projects delete agent-490407 --quiet
+gcloud projects delete <YOUR_PROJECT_ID> --quiet
 ```
 
 This removes all services/resources and stops billing when deletion completes.

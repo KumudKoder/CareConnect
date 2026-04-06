@@ -2,19 +2,19 @@
 
 ## Project
 
-- Project ID: `agent-490407`
-- Region: `us-central1`
+- Project ID: `<YOUR_PROJECT_ID>`
+- Region: `<YOUR_REGION>`
 
 ## Deployed Cloud Run services
 
 - `careconnect-main-backend`
-  - URL: `https://careconnect-main-backend-1023139347696.us-central1.run.app`
+  - URL: `https://careconnect-main-backend-<YOUR_PROJECT_NUMBER>.<YOUR_REGION>.run.app`
   - Status: ✅ deployed
 - `careconnect-mcp-server`
-  - URL: `https://careconnect-mcp-server-1023139347696.us-central1.run.app`
+  - URL: `https://careconnect-mcp-server-<YOUR_PROJECT_NUMBER>.<YOUR_REGION>.run.app`
   - Status: ✅ deployed
 - `careconnect-adk-ui`
-  - URL: `https://careconnect-adk-ui-1023139347696.us-central1.run.app/dev-ui/`
+  - URL: `https://careconnect-adk-ui-<YOUR_PROJECT_NUMBER>.<YOUR_REGION>.run.app/dev-ui/`
   - Status: ✅ deployed
 
 ## Runtime verification done

@@ -1,10 +1,10 @@
 param(
-    [string]$ProjectId = "agent-490407",
-  [string]$Region = "us-central1",
-  [string]$AlloydbInstanceUri = "projects/agent-490407/locations/us-central1/clusters/YOUR_CLUSTER/instances/YOUR_INSTANCE",
-  [string]$AlloydbDbName = "careconnect",
+    [string]$ProjectId = "<YOUR_PROJECT_ID>",
+  [string]$Region = "<YOUR_REGION>",
+  [string]$AlloydbInstanceUri = "projects/<YOUR_PROJECT_ID>/locations/<YOUR_REGION>/clusters/<YOUR_CLUSTER>/instances/<YOUR_INSTANCE>",
+  [string]$AlloydbDbName = "<YOUR_DB_NAME>",
   [string]$AlloydbDbUser = "postgres",
-  [string]$AlloydbDbPassword = "CHANGE_ME"
+  [string]$AlloydbDbPassword = "<YOUR_DB_PASSWORD>"
 )
 
 $ErrorActionPreference = "Stop"

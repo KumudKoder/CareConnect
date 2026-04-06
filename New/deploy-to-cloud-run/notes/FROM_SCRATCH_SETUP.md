@@ -24,7 +24,7 @@ This repository deploys 3 services:
 - Logged in to gcloud:
   - `gcloud auth login`
 - Set project:
-  - `gcloud config set project agent-490407`
+  - `gcloud config set project <YOUR_PROJECT_ID>`
 
 ---
 
@@ -55,9 +55,9 @@ Enable these once:
 
 Suggested names:
 
-- Cluster: `careconnect-cluster`
-- Primary instance: `careconnect-primary`
-- Region: `us-central1`
+- Cluster: `<YOUR_CLUSTER>` (recommended: `careconnect-cluster`)
+- Primary instance: `<YOUR_INSTANCE>` (recommended: `careconnect-primary`)
+- Region: `<YOUR_REGION>` (recommended: `us-central1`)
 - Network: `default`
 
 Create with postgres password (save it securely).
@@ -81,7 +81,7 @@ Create/update secret:
 
 Grant runtime service account access:
 
-- Service account: `1023139347696-compute@developer.gserviceaccount.com`
+- Service account: `<YOUR_PROJECT_NUMBER>-compute@developer.gserviceaccount.com`
 - Role: `roles/secretmanager.secretAccessor`
 
 ---
@@ -101,12 +101,12 @@ State must be `READY`.
 
 Use `deploy-to-cloud-run/.env` with values:
 
-- `GOOGLE_CLOUD_PROJECT=agent-490407`
-- `GOOGLE_CLOUD_LOCATION=us-central1`
+- `GOOGLE_CLOUD_PROJECT=<YOUR_PROJECT_ID>`
+- `GOOGLE_CLOUD_LOCATION=<YOUR_REGION>`
 - `GOOGLE_GENAI_USE_VERTEXAI=true`
 - `SKIP_TOKEN_VERIFY=true` (local/testing only)
-- `ALLOYDB_INSTANCE_URI=projects/agent-490407/locations/us-central1/clusters/careconnect-cluster/instances/careconnect-primary`
-- `ALLOYDB_DB_NAME=careconnectdb` (or `postgres` during transition)
+- `ALLOYDB_INSTANCE_URI=projects/<YOUR_PROJECT_ID>/locations/<YOUR_REGION>/clusters/<YOUR_CLUSTER>/instances/<YOUR_INSTANCE>`
+- `ALLOYDB_DB_NAME=<YOUR_DB_NAME>` (recommended: `careconnectdb`)
 - `ALLOYDB_DB_USER=postgres`
 - `ALLOYDB_ENABLE_IAM_AUTH=false`
 
@@ -118,7 +118,7 @@ Use `deploy-to-cloud-run/.env` with values:
 
 From `deploy-to-cloud-run/`, run the deployment script:
 
-- `./deploy_new.ps1 -ProjectId agent-490407 -Region us-central1`
+- `./deploy_new.ps1 -ProjectId <YOUR_PROJECT_ID> -Region <YOUR_REGION>`
 
 This deploys all 3 services.
 
@@ -136,7 +136,7 @@ After deploy, update backend Cloud Run service settings:
 
 ### Backend health
 
-- `GET https://careconnect-main-backend-1023139347696.us-central1.run.app/health`
+- `GET https://careconnect-main-backend-<YOUR_PROJECT_NUMBER>.us-central1.run.app/health`
 
 Expected:
 
@@ -145,12 +145,12 @@ Expected:
 ### UI
 
 - Open:
-  - `https://careconnect-adk-ui-1023139347696.us-central1.run.app/dev-ui/`
+  - `https://careconnect-adk-ui-<YOUR_PROJECT_NUMBER>.us-central1.run.app/dev-ui/`
 
 ### MCP endpoint
 
 - Base:
-  - `https://careconnect-mcp-server-1023139347696.us-central1.run.app`
+  - `https://careconnect-mcp-server-<YOUR_PROJECT_NUMBER>.us-central1.run.app`
 - MCP path:
   - `/mcp`
 
@@ -231,10 +231,12 @@ If counts are zero, you likely called read-only workflows (`check_schedule` / `r
 
 ## 14) Current project values (this workspace)
 
-- Project: `agent-490407`
-- Region: `us-central1`
-- Cluster: `careconnect-cluster`
-- Instance: `careconnect-primary`
+Replace these placeholders with your actual values:
+
+- Project: `<YOUR_PROJECT_ID>` (example: `agent-490407`)
+- Region: `<YOUR_REGION>` (example: `us-central1`)
+- Cluster: `<YOUR_CLUSTER>` (example: `careconnect-cluster`)
+- Instance: `<YOUR_INSTANCE>` (example: `careconnect-primary`)
 - Backend service: `careconnect-main-backend`
 - MCP service: `careconnect-mcp-server`
 - UI service: `careconnect-adk-ui`
