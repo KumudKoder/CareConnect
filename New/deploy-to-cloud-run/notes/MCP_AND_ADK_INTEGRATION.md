@@ -100,6 +100,141 @@ Replace `<YOUR_MCP_DOMAIN>` with actual deployed MCP server domain:
 
 ---
 
+## Deploy MCP and ADK Services (Complete Commands)
+
+### Prerequisites
+
+Ensure you have:
+- `gcloud` CLI installed and authenticated
+- `adk` CLI installed (`pip install google-adk`)
+- Project ID, region, and resource names ready
+
+### Step 1: Deploy MCP Server
+
+Run from `mcp-tool-server/` directory:
+
+```powershell
+# Set your values
+$PROJECT_ID = "<YOUR_PROJECT_ID>"
+$REGION = "<YOUR_REGION>"
+
+# Build and push MCP server image
+gcloud builds submit --tag "gcr.io/$PROJECT_ID/careconnect-mcp-server" --project=$PROJECT_ID
+
+# Deploy MCP server to Cloud Run
+gcloud run deploy careconnect-mcp-server `
+  --image "gcr.io/$PROJECT_ID/careconnect-mcp-server" `
+  --platform managed `
+  --region $REGION `
+  --allow-unauthenticated `
+  --project=$PROJECT_ID
+
+# Get the deployed MCP URL
+$MCP_URL = gcloud run services describe careconnect-mcp-server --region=$REGION --project=$PROJECT_ID --format="value(status.url)"
+Write-Host "MCP Server URL: $MCP_URL/mcp"
+```
+
+### Step 2: Deploy ADK UI with MCP Integration
+
+Run from root `deploy-to-cloud-run/` directory:
+
+```powershell
+# Set your values
+$PROJECT_ID = "<YOUR_PROJECT_ID>"
+$REGION = "<YOUR_REGION>"
+$MCP_DOMAIN = "careconnect-mcp-server-<YOUR_PROJECT_NUMBER>.$REGION.run.app"
+
+# Deploy ADK UI with MCP toolset
+adk deploy cloud_run `
+  --project=$PROJECT_ID `
+  --region=$REGION `
+  --service_name=careconnect-adk-ui `
+  --app_name=CareConnectApp `
+  --with_ui `
+  .\myAgent
+
+# Update ADK service with MCP environment variable
+gcloud run services update careconnect-adk-ui `
+  --project=$PROJECT_ID `
+  --region=$REGION `
+  --update-env-vars "MCP_SERVER_URL=https://$MCP_DOMAIN/mcp"
+
+# Get the deployed ADK UI URL
+$ADK_URL = gcloud run services describe careconnect-adk-ui --region=$REGION --project=$PROJECT_ID --format="value(status.url)"
+Write-Host "ADK UI URL: $ADK_URL/dev-ui/"
+```
+
+### Step 3: Verify Both Services Are Running
+
+```powershell
+# Check MCP server health
+Write-Host "Testing MCP server..."
+Invoke-WebRequest -Uri "https://$MCP_DOMAIN/mcp" -UseBasicParsing -ErrorAction SilentlyContinue | Select-Object -ExpandProperty StatusCode
+
+# Check ADK UI availability
+Write-Host "Testing ADK UI..."
+Invoke-WebRequest -Uri "$ADK_URL" -UseBasicParsing | Select-Object -ExpandProperty StatusCode
+
+# View service environment
+gcloud run services describe careconnect-adk-ui --region=$REGION --project=$PROJECT_ID --format="yaml(spec.template.spec.containers[0].env)"
+```
+
+### All-In-One Deployment Script
+
+Save this as `deploy-mcp-adk.ps1` and run from root:
+
+```powershell
+param(
+    [string]$ProjectId = "<YOUR_PROJECT_ID>",
+    [string]$Region = "<YOUR_REGION>"
+)
+
+Write-Host "Deploying MCP + ADK Integration..." -ForegroundColor Cyan
+
+# 1. Build and deploy MCP server
+Write-Host "Step 1: Deploying MCP Server..." -ForegroundColor Green
+Set-Location "mcp-tool-server"
+gcloud builds submit --tag "gcr.io/$ProjectId/careconnect-mcp-server" --project=$ProjectId
+gcloud run deploy careconnect-mcp-server `
+  --image "gcr.io/$ProjectId/careconnect-mcp-server" `
+  --platform managed `
+  --region $Region `
+  --allow-unauthenticated `
+  --project=$ProjectId
+
+# 2. Deploy ADK UI
+Write-Host "Step 2: Deploying ADK UI..." -ForegroundColor Green
+Set-Location ".."
+adk deploy cloud_run `
+  --project=$ProjectId `
+  --region=$Region `
+  --service_name=careconnect-adk-ui `
+  --app_name=CareConnectApp `
+  --with_ui `
+  .\myAgent
+
+# 3. Configure ADK with MCP URL
+Write-Host "Step 3: Configuring ADK with MCP URL..." -ForegroundColor Green
+$mcp_domain = "careconnect-mcp-server-$(gcloud config get-value project --format='value(project_number)').$Region.run.app"
+gcloud run services update careconnect-adk-ui `
+  --project=$ProjectId `
+  --region=$Region `
+  --update-env-vars "MCP_SERVER_URL=https://$mcp_domain/mcp"
+
+# 4. Get service URLs
+Write-Host "Step 4: Getting service URLs..." -ForegroundColor Green
+$mcp_url = gcloud run services describe careconnect-mcp-server --region=$Region --project=$ProjectId --format="value(status.url)"
+$adk_url = gcloud run services describe careconnect-adk-ui --region=$Region --project=$ProjectId --format="value(status.url)"
+
+Write-Host "" -ForegroundColor Cyan
+Write-Host "✅ Deployment Complete!" -ForegroundColor Green
+Write-Host "MCP Server: $mcp_url/mcp" -ForegroundColor Cyan
+Write-Host "ADK UI: $adk_url/dev-ui/" -ForegroundColor Cyan
+Write-Host "" -ForegroundColor Cyan
+```
+
+---
+
 ## Testing the Integration
 
 ### 1) Verify MCP server is reachable
